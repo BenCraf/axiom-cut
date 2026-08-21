@@ -3,10 +3,23 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('.', import.meta.url))
+try {
+  process.loadEnvFile?.(resolve(root, '.env'))
+} catch (error) {
+  if (error?.code !== 'ENOENT') console.warn('Could not load .env:', error?.message)
+}
 const app = express()
 const port = Number(process.env.PORT || 4173)
 
 app.use(express.json({ limit: '64kb' }))
+
+app.get('/api/status', (_request, response) => {
+  response.json({
+    provider: 'DeepSeek',
+    configured: Boolean(process.env.DEEPSEEK_API_KEY),
+    model: process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash',
+  })
+})
 
 const fallbackPlan = (prompt) => {
   const isGolden = /黄金|golden/i.test(prompt)
