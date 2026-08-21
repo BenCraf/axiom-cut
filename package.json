@@ -1,9 +1,9 @@
 {
   "name": "axiom-cut",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
-  "description": "A code-driven video editing agent with a mathematical animation aesthetic.",
+  "description": "A deterministic, code-directed video editing agent with local upload and comparison demos.",
   "scripts": {
     "dev": "node server.mjs",
     "build": "tsc -b && vite build",

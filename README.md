@@ -1,14 +1,14 @@
 # Axiom Cut
 
-A code-driven, self-evolving video editing Agent with a mathematical-animation visual language. Describe a scene in natural language, inspect every execution step, and watch the Agent critique and improve its own result.
+A code-directed video editing Agent. Upload a real video or start from a built-in scene, describe the edit in natural language, then inspect the exact SVG, CSS and frame-based operations used to create the result.
 
 ![Axiom Cut UI](docs/preview.png)
 
 ## Why this project
 
-The assignment asks for basic editing, a usable human-in-the-loop interface, and an Agent that can perform editing work. Axiom Cut focuses its advanced module on **observable self-evolution**: the user always knows what the Agent plans to do, what tool is running, how the result scores, what mutations were explored, and why one version won.
+The assignment asks for basic editing, a usable human-in-the-loop interface, and an Agent that can perform editing work. Axiom Cut makes the result inspectable: the model proposes a structured plan and parameters, while deterministic React/SVG/video layers produce the pixels. The user can always compare the original with the code-enhanced version.
 
-Version 0.2 is a complete interactive product demo. It includes a responsive editor, animated mathematical preview, editable prompt, generated six-step plan, live pipeline state, visual critic, candidate mutations, version history, project memory, export manifest, DeepSeek integration, and a zero-config demo fallback. A production renderer such as Remotion or Manim is the next implementation layer.
+Version 0.3 expands the studio beyond mathematics. It includes local video upload and preview, four toggleable code operations, original/enhanced comparison, a deterministic code timeline, visible `scene.tsx`, a product-launch demo, a new derivative animation demo, DeepSeek planning, and reproducible project export. A production Remotion/FFmpeg worker is the next implementation layer.
 
 ## Run locally
 
@@ -35,42 +35,46 @@ DEEPSEEK_MODEL=deepseek-v4-flash
 
 The browser calls `/api/plan` and `/api/evolve`; the key is never sent to the client. The server uses DeepSeek's OpenAI-compatible `POST /chat/completions` endpoint with JSON Output.
 
-## One-click demo
+## Two comparison demos
 
-Click **完整演示** in the top bar. The demo runs this observable loop:
+Choose either card in the left media panel:
 
-```text
-Brief → Plan → Execute 6 tools → Visual critique
-      → Generate 3 mutations → Select winner
-      → Store project memory → Render ready
-```
+- **Product launch** — a general-purpose edit built from typography, layout and motion code.
+- **Derivative / local linearity** — a 3b1b-inspired but original SVG scene with a frame-driven curve, tangent, delta guides and formula.
 
-Open **进化实验室** to inspect the quality score, four evaluation metrics, candidates, selection rationale, and accumulated preferences. Click **再进化一轮** to produce the next version with diminishing gains instead of endlessly claiming improvement.
+Use **Original / Compare / Code Edit** above the preview to inspect the change. Open `scene.tsx` below it to see the deterministic scene definition.
+
+## Upload a video
+
+Click **上传本地视频** and choose an MP4, MOV or WebM file. The browser creates a local Object URL: the video itself is not sent to DeepSeek. Toggle auto captions, smart crop, parameterized color and motion graphics, then describe the desired edit in the Director panel. DeepSeek receives only the written brief; the current demo overlays code-driven layers on the local video.
 
 See [docs/EVOLUTION.md](docs/EVOLUTION.md) for the data contract and safety boundaries.
 
 ## Product flow
 
 ```text
-Natural-language brief
+Local video or code scene + natural-language brief
         ↓
-DeepSeek structured plan
+DeepSeek structured plan and parameters
         ↓
-Scene composition → animation → visual inspection
+Video source + SVG/CSS layers + frame timeline
         ↓
-Deterministic timeline → renderer (next milestone)
+Original/enhanced comparison → reproducible project JSON
 ```
 
 ## Roadmap
 
-- [x] Mathematical editor UI and animated preview
+- [x] General video-editing studio and local upload preview
+- [x] Original/code-enhanced side-by-side comparison
+- [x] Product-launch and mathematical comparison demos
+- [x] Deterministic React/SVG scene code and code timeline
 - [x] Visible Agent plan, pipeline, and current step
 - [x] DeepSeek structured planning and evolution APIs
 - [x] Demo mode without credentials
 - [x] Visual critic, mutation selection, version history, and project memory
 - [x] Static-file demo and reproducible project JSON export
 - [ ] Remotion composition generation
-- [ ] Asset upload and media inspection tools
+- [ ] Media metadata, speech transcription and shot detection
 - [ ] FFmpeg/Remotion render queue and MP4 export
 - [ ] Human approval gates and iterative revision
 
@@ -82,4 +86,4 @@ Deterministic timeline → renderer (next milestone)
 
 ## Tech stack
 
-React, TypeScript, Vite, Express, SVG/CSS animation, and DeepSeek API.
+React, TypeScript, Vite, Express, HTML5 Video, SVG/CSS animation, and DeepSeek API.

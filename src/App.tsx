@@ -1,552 +1,200 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ArrowUp,
-  AudioLines,
-  BrainCircuit,
-  Check,
-  CheckCircle2,
-  ChevronDown,
-  CircleHelp,
-  Code2,
-  Cpu,
-  Download,
-  Eye,
-  Film,
-  FlaskConical,
-  FolderOpen,
-  Gauge,
-  GitCompareArrows,
-  Github,
-  History,
-  Image,
-  LayoutGrid,
-  Layers3,
-  Maximize2,
-  MessageSquareText,
-  MoreHorizontal,
-  PanelRight,
-  Pause,
-  Play,
-  Plus,
-  RotateCcw,
-  Rocket,
-  Search,
-  Settings2,
-  ShieldCheck,
-  Sparkles,
-  UploadCloud,
-  Video,
-  Volume2,
-  WandSparkles,
-  X,
-  Zap,
+  ArrowUp, BrainCircuit, Check, ChevronDown, CirclePlay, Code2, Download,
+  FileCode2, Film, Gauge, Github, Layers3, MonitorPlay, MoreHorizontal,
+  Pause, Play, Plus, RefreshCw, Scissors, ShieldCheck, SplitSquareHorizontal,
+  Upload, Video, WandSparkles, X, Zap,
 } from 'lucide-react'
 
-type PlanStep = {
-  id: string
-  title: string
-  detail: string
-  tool: string
-  duration: string
-}
-
+type DemoId = 'product' | 'math'
+type CompareMode = 'before' | 'split' | 'after'
+type PipelineStage = 'idle' | 'planning' | 'building' | 'checking' | 'ready'
+type PlanStep = { id: string; title: string; detail: string; tool: string; duration: string }
 type AgentPlan = {
-  projectTitle: string
-  summary: string
-  accent: string
-  equation: string
-  steps: PlanStep[]
-  demo?: boolean
-  model?: string
+  projectTitle: string; summary: string; accent: string; equation: string
+  category?: string; renderEngine?: string; steps: PlanStep[]; demo?: boolean; model?: string
+}
+type ApiStatus = { configured: boolean; model: string }
+type UploadedMedia = { name: string; url: string; size: string }
+type EditOps = { captions: boolean; smartCrop: boolean; color: boolean; motion: boolean }
+
+const DEMOS = {
+  product: {
+    id: 'product' as const, title: '产品发布 · Flux Note', label: '通用剪辑 Demo',
+    description: '代码生成动态排版、产品镜头、字幕和节奏切点。', accent: '#ff6b55',
+    prompt: '把一段普通产品素材剪成 12 秒发布短片，强调速度、层级和品牌感。', duration: 12,
+  },
+  math: {
+    id: 'math' as const, title: '导数 · 局部线性', label: '数学动画 Demo',
+    description: '曲线、切线、标注与公式全部由 SVG 参数生成。', accent: '#64d8ef',
+    prompt: '用 18 秒解释导数是局部线性：沿曲线移动切点并显示斜率变化。', duration: 18,
+  },
 }
 
-type EvolutionMetric = {
-  label: string
-  value: number
-  previous: number
-}
-
-type Mutation = {
-  id: string
-  title: string
-  detail: string
-  expectedGain: string
-  selected: boolean
-}
-
-type EvolutionResult = {
-  version: string
-  previousVersion: string
-  score: number
-  previousScore: number
-  delta: number
-  metrics: EvolutionMetric[]
-  mutations: Mutation[]
-  rationale: string
-  memory: string[]
-  evolvedPlan: AgentPlan
-  demo?: boolean
-}
-
-type PipelineStage = 'idle' | 'planning' | 'executing' | 'evaluating' | 'evolving' | 'ready'
-
-type ApiStatus = {
-  configured: boolean
-  model: string
-}
-
-const initialEvolution: EvolutionResult = {
-  version: 'v1.0',
-  previousVersion: '—',
-  score: 78.6,
-  previousScore: 0,
-  delta: 0,
-  metrics: [
-    { label: '叙事清晰度', value: 82, previous: 0 },
-    { label: '构图平衡', value: 79, previous: 0 },
-    { label: '节奏控制', value: 74, previous: 0 },
-    { label: '视觉连续性', value: 80, previous: 0 },
-  ],
-  mutations: [],
-  rationale: '运行完整 Demo 后，Agent 会基于画面指标生成并选择更优版本。',
-  memory: ['数学对象优先于装饰', '保持深色背景与高对比标注'],
-  evolvedPlan: {} as AgentPlan,
-  demo: true,
-}
+const baseSteps: PlanStep[] = [
+  { id: '01', title: '理解素材', detail: '识别主体、语义和可用镜头', tool: 'analyze()', duration: '0.4s' },
+  { id: '02', title: '建立节奏', detail: '把叙事拆成确定性时间段', tool: 'sequence()', duration: '0.7s' },
+  { id: '03', title: '生成图层', detail: '用 SVG / CSS 构建标题与图形', tool: 'compose()', duration: '1.1s' },
+  { id: '04', title: '编排运动', detail: '写入关键帧、缓动和转场', tool: 'animate()', duration: '0.9s' },
+  { id: '05', title: '静态检查', detail: '检查遮挡、越界和阅读时长', tool: 'inspect()', duration: '0.5s' },
+  { id: '06', title: '锁定工程', detail: '输出可复现的场景配置', tool: 'serialize()', duration: '0.3s' },
+]
 
 const initialPlan: AgentPlan = {
-  projectTitle: '欧拉公式 · 几何直觉',
-  summary: '从单位圆出发，把旋转、投影与复指数串成一段 18 秒数学动画。',
-  accent: '#58c4dd',
-  equation: 'eⁱˣ = cos(x) + i sin(x)',
-  steps: [
-    { id: '01', title: '理解目标', detail: '识别主题、节奏与视觉语言', tool: 'reason', duration: '0.8s' },
-    { id: '02', title: '拆解镜头', detail: '生成 4 段叙事结构', tool: 'plan', duration: '1.2s' },
-    { id: '03', title: '构建几何场景', detail: '绘制复平面、单位圆与轨迹', tool: 'compose', duration: '2.4s' },
-    { id: '04', title: '编排动画', detail: '匹配缓动、字幕与转场', tool: 'animate', duration: '1.8s' },
-    { id: '05', title: '检查画面', detail: '验证遮挡、节奏和安全区', tool: 'inspect', duration: '1.1s' },
-    { id: '06', title: '准备渲染', detail: '生成确定性时间线配置', tool: 'render', duration: '0.9s' },
-  ],
-  demo: true,
-  model: 'Local demo',
+  projectTitle: DEMOS.product.title, summary: DEMOS.product.prompt, accent: DEMOS.product.accent,
+  equation: 'speed × clarity', category: '产品短片', renderEngine: 'SVG + CSS Timeline',
+  steps: baseSteps, demo: true, model: 'Local deterministic demo',
 }
 
-const samples = [
-  '用 18 秒解释欧拉公式：从单位圆旋转到 eⁱˣ，蓝黄配色，节奏克制。',
-  '把黄金分割做成 15 秒竖屏动画，从矩形递归到螺旋线。',
-  '用几何方式解释勾股定理，正方形重排，最后停在 a²+b²=c²。',
-]
+const formatBytes = (bytes: number) => bytes < 1024 * 1024
+  ? `${Math.max(1, Math.round(bytes / 1024))} KB`
+  : `${(bytes / 1024 / 1024).toFixed(1)} MB`
 
-const assets = [
-  { icon: Image, name: 'complex-plane.svg', meta: 'SVG · 42 KB', color: 'cyan' },
-  { icon: Code2, name: 'euler-scene.tsx', meta: 'CODE · 3.8 KB', color: 'yellow' },
-  { icon: AudioLines, name: 'ambient-pulse.wav', meta: 'AUDIO · 0:18', color: 'green' },
-]
-
-const createLocalPlan = (brief: string): AgentPlan => {
-  const isGolden = /黄金|golden/i.test(brief)
-  const isPythagoras = /勾股|pythag/i.test(brief)
+const buildLocalPlan = (brief: string, source: DemoId | 'upload'): AgentPlan => {
+  const isMath = source === 'math' || /数学|公式|导数|几何|math|equation/i.test(brief)
   return {
     ...initialPlan,
-    projectTitle: isGolden ? '黄金分割 · 生长秩序' : isPythagoras ? '勾股定理 · 面积证明' : '欧拉公式 · 几何直觉',
-    summary: brief.slice(0, 88),
-    accent: isGolden ? '#f4d35e' : isPythagoras ? '#83c78f' : '#58c4dd',
-    equation: isGolden ? 'φ = (1 + √5) / 2' : isPythagoras ? 'a² + b² = c²' : 'eⁱˣ = cos(x) + i sin(x)',
+    projectTitle: source === 'upload' ? '上传素材 · 代码增强' : isMath ? DEMOS.math.title : DEMOS.product.title,
+    summary: brief.slice(0, 110), accent: isMath ? DEMOS.math.accent : DEMOS.product.accent,
+    equation: isMath ? "f'(x) = lim Δy / Δx" : 'speed × clarity',
+    category: source === 'upload' ? '上传视频' : isMath ? '数学动画' : '产品短片',
+    renderEngine: isMath ? 'React SVG + frame()' : 'Video + SVG Overlay', steps: baseSteps, demo: true,
   }
 }
 
-const createLocalEvolution = (brief: string, sourcePlan: AgentPlan, previous: EvolutionResult): EvolutionResult => {
-  const minor = Number(previous.version.match(/\.(\d+)/)?.[1] || 0) + 1
-  const previousScore = previous.score || 78.6
-  const score = Math.min(96.8, Number((previousScore + Math.max(3.2, 12.1 - minor * 1.4)).toFixed(1)))
-  const previousValues = previous.metrics.map((metric) => metric.value)
-  const gains = [10, 13, 12, 11]
-  const labels = ['叙事清晰度', '构图平衡', '节奏控制', '视觉连续性']
-  return {
-    version: `v1.${minor}`,
-    previousVersion: previous.version,
-    score,
-    previousScore,
-    delta: Number((score - previousScore).toFixed(1)),
-    metrics: labels.map((label, index) => ({ label, previous: previousValues[index], value: Math.min(98, previousValues[index] + gains[index]) })),
-    mutations: [
-      { id: 'μ-01', title: '强化视觉锚点', detail: '核心几何对象先于公式出现，降低首屏认知负担。', expectedGain: '+8.4', selected: true },
-      { id: 'μ-02', title: '提高运动密度', detail: '缩短停顿并增加轨迹残影，画面更有冲击力。', expectedGain: '+5.1', selected: false },
-      { id: 'μ-03', title: '公式分步显影', detail: '按推导顺序拆分公式，但会增加整体时长。', expectedGain: '+4.6', selected: false },
-    ],
-    rationale: 'μ-01 同时提高叙事清晰度和构图平衡，且不改变原有 18 秒节奏，因此被选为本轮最优变体。',
-    memory: ['核心对象先出现，再给出符号解释', '深色背景 + 蓝黄高对比标注', '每个结论至少保留 1.2 秒阅读时间'],
-    evolvedPlan: { ...sourcePlan, summary: `${sourcePlan.summary.replace(/[。.]$/, '')}；核心对象提前 12 帧，公式按视觉锚点同步显影。`, accent: /黄金|golden/i.test(brief) ? '#ffd86a' : '#67d7ed' },
-    demo: true,
-  }
+function MathScene({ variant, progress }: { variant: 'before' | 'after'; progress: number }) {
+  const x = 205 + progress * 380
+  const curveY = 410 - Math.pow((x - 205) / 380, 2) * 255
+  const slope = -0.55 - progress * 1.2
+  const tangentLength = 150
+  const x1 = x - tangentLength
+  const x2 = x + tangentLength
+  const y1 = curveY - slope * tangentLength
+  const y2 = curveY + slope * tangentLength
+  return <svg className={`scene-svg math-demo ${variant}`} viewBox="0 0 960 540" role="img" aria-label={`${variant === 'after' ? '代码增强后' : '原始'}导数动画`}>
+    <defs>
+      <linearGradient id={`mathBg-${variant}`} x1="0" x2="1" y1="0" y2="1"><stop stopColor={variant === 'after' ? '#071015' : '#11151a'} /><stop offset="1" stopColor="#050709" /></linearGradient>
+      <radialGradient id={`mathGlow-${variant}`} cx="45%" cy="50%" r="55%"><stop stopColor="#52d7ee" stopOpacity={variant === 'after' ? '.16' : '.04'} /><stop offset="1" stopColor="#52d7ee" stopOpacity="0" /></radialGradient>
+      <pattern id={`grid-${variant}`} width="30" height="30" patternUnits="userSpaceOnUse"><path d="M30 0H0V30" fill="none" stroke="#26323a" strokeWidth=".7" opacity={variant === 'after' ? '.55' : '.26'} /></pattern>
+      <filter id={`glow-${variant}`}><feGaussianBlur stdDeviation="5" result="b" /><feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge></filter>
+    </defs>
+    <rect width="960" height="540" fill={`url(#mathBg-${variant})`} /><rect width="960" height="540" fill={`url(#grid-${variant})`} /><rect width="960" height="540" fill={`url(#mathGlow-${variant})`} />
+    <g className="coordinate-system"><path d="M90 430H645M145 474V84" /><path d="M638 424L646 430L638 436M139 92L145 84L151 92" /><text x="628" y="460">x</text><text x="163" y="101">f(x)</text></g>
+    <path className="function-shadow" d="M90 470 C185 454 247 421 305 365 C382 290 450 210 646 110" /><path className="function-line" d="M90 470 C185 454 247 421 305 365 C382 290 450 210 646 110" />
+    {variant === 'after' ? <>
+      <g className="math-tangent"><line x1={x1} y1={y1} x2={x2} y2={y2} /><circle cx={x} cy={curveY} r="8" /><circle className="point-halo" cx={x} cy={curveY} r="18" /></g>
+      <g className="delta-guide"><path d={`M${x} ${curveY + 66}H${x + 88}V${curveY - 28}`} /><text x={x + 31} y={curveY + 86}>Δx</text><text x={x + 100} y={curveY + 22}>Δy</text></g>
+      <g className="math-copy"><text className="micro" x="702" y="105">LOCAL LINEARITY / 02</text><text className="headline" x="702" y="160">放大曲线</text><text className="headline accent" x="702" y="207">直到它成为直线</text><line x1="702" y1="238" x2="889" y2="238" /><text className="formula" x="702" y="290">f′(x) = lim</text><text className="fraction" x="839" y="274">Δy</text><line x1="837" y1="282" x2="878" y2="282" /><text className="fraction" x="839" y="307">Δx</text><text className="caption" x="702" y="359">切线斜率，就是瞬时变化率</text></g>
+      <g className="frame-code"><text x="38" y="44">SCENE.DERIVATIVE()</text><text x="804" y="508">FRAME {String(Math.round(progress * 540)).padStart(3, '0')}</text></g>
+    </> : <><circle className="basic-point" cx={x} cy={curveY} r="7" /><text className="basic-title" x="690" y="190">导数</text><text className="basic-formula" x="690" y="245">f′(x)</text><text className="basic-note" x="690" y="292">曲线在一点的斜率</text></>}
+  </svg>
 }
 
-function MathScene({ playing, progress, equation, accent, version, score, evolved }: { playing: boolean; progress: number; equation: string; accent: string; version: string; score: number; evolved: boolean }) {
-  return (
-    <svg className={`math-scene ${playing ? 'is-playing' : ''}`} viewBox="0 0 960 540" role="img" aria-label="欧拉公式数学动画预览">
-      <defs>
-        <radialGradient id="sceneGlow" cx="45%" cy="45%" r="58%">
-          <stop offset="0" stopColor={accent} stopOpacity=".12" />
-          <stop offset="1" stopColor="#070a0f" stopOpacity="0" />
-        </radialGradient>
-        <filter id="softGlow">
-          <feGaussianBlur stdDeviation="4" result="blur" />
-          <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-        </filter>
-        <pattern id="tinyGrid" width="24" height="24" patternUnits="userSpaceOnUse">
-          <path d="M 24 0 L 0 0 0 24" fill="none" stroke="#26303a" strokeWidth=".6" opacity=".42" />
-        </pattern>
-      </defs>
+function ProductScene({ variant, progress }: { variant: 'before' | 'after'; progress: number }) {
+  const offset = Math.sin(progress * Math.PI * 2) * 7
+  return <svg className={`scene-svg product-demo ${variant}`} viewBox="0 0 960 540" role="img" aria-label={`${variant === 'after' ? '代码增强后' : '原始'}产品动画`}>
+    <defs><linearGradient id={`productBg-${variant}`} x1="0" x2="1" y1="0" y2="1"><stop stopColor="#16171b" /><stop offset="1" stopColor="#07080a" /></linearGradient><linearGradient id={`coral-${variant}`} x1="0" x2="1"><stop stopColor="#ff846d" /><stop offset="1" stopColor="#ff4f6d" /></linearGradient><filter id={`productShadow-${variant}`}><feDropShadow dx="0" dy="20" stdDeviation="18" floodOpacity=".35" /></filter></defs>
+    <rect width="960" height="540" fill={`url(#productBg-${variant})`} />
+    {variant === 'after' && <><circle cx="160" cy="70" r="260" fill="#ff635a" opacity=".06" /><circle cx="850" cy="470" r="250" fill="#695bff" opacity=".08" /><path className="product-grid" d="M0 108H960M0 216H960M0 324H960M0 432H960M192 0V540M384 0V540M576 0V540M768 0V540" /></>}
+    <g className="product-device" transform={`translate(0 ${variant === 'after' ? offset : 0})`} filter={`url(#productShadow-${variant})`}><rect x="565" y="70" width="245" height="400" rx="34" fill="#090b0f" stroke={variant === 'after' ? '#343944' : '#24272d'} strokeWidth="5" /><rect x="584" y="91" width="207" height="358" rx="22" fill={variant === 'after' ? '#f4f0e9' : '#23262b'} /><rect x="655" y="104" width="66" height="7" rx="4" fill="#11151a" /><circle cx="616" cy="151" r="18" fill={variant === 'after' ? '#ff6b55' : '#555b63'} /><rect x="647" y="140" width="105" height="10" rx="5" fill={variant === 'after' ? '#15181c' : '#4b5057'} /><rect x="647" y="158" width="72" height="7" rx="4" fill="#777d84" />{[0, 1, 2].map((item) => <g key={item} transform={`translate(0 ${item * 74})`}><rect x="606" y="201" width="163" height="58" rx="12" fill={variant === 'after' ? (item === 0 ? '#181b21' : '#dedad3') : '#34383e'} /><circle cx="625" cy="220" r="7" fill={variant === 'after' ? '#ff6b55' : '#5a6068'} /><rect x="641" y="213" width="90" height="8" rx="4" fill={variant === 'after' && item === 0 ? '#fff' : '#666c74'} /><rect x="641" y="230" width="58" height="6" rx="3" fill="#81868d" /></g>)}</g>
+    {variant === 'after' ? <g className="product-copy"><text className="product-kicker" x="80" y="112">NEW / PRODUCTIVITY</text><text className="product-title" x="80" y="194">Ideas move</text><text className="product-title outline" x="80" y="266">at your speed.</text><text className="product-sub" x="84" y="319">捕捉灵感。组织思考。保持流动。</text><rect x="82" y="363" width="174" height="48" rx="24" fill={`url(#coral-${variant})`} /><text className="product-cta" x="123" y="394">MEET FLUX</text><g className="product-meta"><text x="81" y="473">00:07 / 00:12</text><text x="386" y="473">CODE EDIT</text></g></g> : <g className="raw-copy"><text x="86" y="174">Flux Note</text><text x="86" y="222">全新的效率工具</text><rect x="86" y="258" width="160" height="42" rx="5" /><text x="125" y="285">了解更多</text></g>}
+  </svg>
+}
 
-      <rect width="960" height="540" fill="#080b10" />
-      <rect width="960" height="540" fill="url(#tinyGrid)" />
-      <rect width="960" height="540" fill="url(#sceneGlow)" />
-
-      <g className="axes" opacity=".72">
-        <line x1="78" y1="290" x2="628" y2="290" />
-        <line x1="340" y1="62" x2="340" y2="500" />
-        <path d="M 618 284 L 628 290 L 618 296" />
-        <path d="M 334 72 L 340 62 L 346 72" />
-        <text x="608" y="316">Re</text>
-        <text x="356" y="78">Im</text>
-      </g>
-
-      <g className="math-construct" style={{ '--accent': accent } as React.CSSProperties}>
-        <circle className="unit-circle ghost" cx="340" cy="290" r="155" />
-        <circle className="unit-circle draw" cx="340" cy="290" r="155" />
-        <path className="angle-arc" d="M 395 290 A 55 55 0 0 0 376 246" />
-        <text className="theta" x="398" y="265">θ</text>
-
-        <g className="radius-arm">
-          <line x1="340" y1="290" x2="450" y2="180" />
-          <line className="projection" x1="450" y1="180" x2="450" y2="290" />
-          <line className="projection projection-x" x1="340" y1="180" x2="450" y2="180" />
-          <circle className="orbit-dot" cx="450" cy="180" r="7" />
-        </g>
-
-        <text className="label label-cos" x="382" y="315">cos θ</text>
-        <text className="label label-sin" x="466" y="238">sin θ</text>
-        <text className="point-label" x="466" y="171">(cos θ, sin θ)</text>
-      </g>
-
-      <g className="equation-card">
-        <text className="eyebrow" x="650" y="126">THE COMPLEX PLANE</text>
-        <text className="main-equation" x="650" y="195">{equation}</text>
-        <line x1="650" y1="226" x2="878" y2="226" />
-        <text className="explain" x="650" y="270">旋转，是复数乘法</text>
-        <text className="explain muted" x="650" y="304">半径 1 · 角度 θ · 连续运动</text>
-      </g>
-
-      <g className="frame-meta">
-        <text x="36" y="42">AXIOM / SCENE 03</text>
-        <text x="865" y="508">{String(Math.round(progress * 18)).padStart(2, '0')}:18</text>
-      </g>
-      <g className={`quality-stamp ${evolved ? 'visible' : ''}`}>
-        <rect x="36" y="452" width="136" height="44" rx="3" />
-        <text x="49" y="470">EVOLVED {version}</text>
-        <text className="quality-score" x="49" y="488">Q SCORE {score.toFixed(1)}</text>
-      </g>
-      <rect className="scene-progress" x="0" y="534" width={960 * progress} height="6" fill={accent} />
-    </svg>
-  )
+function UploadedScene({ media, variant, playing, ops }: { media: UploadedMedia; variant: 'before' | 'after'; playing: boolean; ops: EditOps }) {
+  return <div className={`uploaded-scene ${variant} ${ops.color && variant === 'after' ? 'graded' : ''}`}><video src={media.url} muted loop autoPlay={playing} playsInline />{variant === 'after' && <div className="video-code-overlay">{ops.motion && <div className="motion-frame"><i /><i /><i /><i /></div>}{ops.captions && <div className="auto-caption"><span>AUTO CAPTION · 00:03</span><strong>让素材跟随故事，而不是模板。</strong></div>}<div className="video-title"><span>CODE DIRECTED</span><strong>{media.name.replace(/\.[^.]+$/, '').slice(0, 24)}</strong></div>{ops.smartCrop && <div className="subject-lock"><span /> SUBJECT LOCK</div>}</div>}</div>
 }
 
 function App() {
-  const [prompt, setPrompt] = useState(samples[0])
-  const [plan, setPlan] = useState(initialPlan)
-  const [evolution, setEvolution] = useState<EvolutionResult>({ ...initialEvolution, evolvedPlan: initialPlan })
+  const [activeDemo, setActiveDemo] = useState<DemoId>('product')
+  const [compareMode, setCompareMode] = useState<CompareMode>('split')
   const [stage, setStage] = useState<PipelineStage>('idle')
   const [activeStep, setActiveStep] = useState(-1)
-  const [isPlaying, setIsPlaying] = useState(true)
+  const [plan, setPlan] = useState(initialPlan)
+  const [prompt, setPrompt] = useState(DEMOS.product.prompt)
+  const [playing, setPlaying] = useState(true)
   const [progress, setProgress] = useState(.38)
-  const [error, setError] = useState('')
-  const [showSamples, setShowSamples] = useState(false)
-  const [showExport, setShowExport] = useState(false)
-  const [agentTab, setAgentTab] = useState<'plan' | 'evolution'>('plan')
-  const [autoEvolve, setAutoEvolve] = useState(true)
+  const [panelTab, setPanelTab] = useState<'timeline' | 'code'>('timeline')
+  const [uploaded, setUploaded] = useState<UploadedMedia | null>(null)
   const [apiStatus, setApiStatus] = useState<ApiStatus>({ configured: false, model: 'deepseek-v4-flash' })
-  const timerRef = useRef<number | undefined>(undefined)
-  const runTokenRef = useRef(0)
-  const lastRunLocalRef = useRef(true)
+  const [editOps, setEditOps] = useState<EditOps>({ captions: true, smartCrop: true, color: true, motion: true })
+  const [showExport, setShowExport] = useState(false)
+  const fileRef = useRef<HTMLInputElement>(null)
+  const runToken = useRef(0)
 
-  const isRunning = ['planning', 'executing', 'evaluating', 'evolving'].includes(stage)
-  const completedCount = activeStep < 0 ? 0 : Math.min(activeStep, plan.steps.length)
-  const statusLabel = {
-    idle: '等待指令',
-    planning: '正在规划',
-    executing: `正在执行 ${Math.min(activeStep + 1, plan.steps.length)}/${plan.steps.length}`,
-    evaluating: '正在自评',
-    evolving: '选择最优变体',
-    ready: '渲染就绪',
-  }[stage]
+  const sourceType: DemoId | 'upload' = uploaded ? 'upload' : activeDemo
+  const demo = DEMOS[activeDemo]
+  const duration = uploaded ? 24 : demo.duration
+  const projectTitle = uploaded ? plan.projectTitle : demo.title
+  const isRunning = ['planning', 'building', 'checking'].includes(stage)
 
-  useEffect(() => {
-    if (!isPlaying) return
-    const timer = window.setInterval(() => setProgress((value) => value >= 1 ? 0 : value + .0025), 80)
-    return () => window.clearInterval(timer)
-  }, [isPlaying])
+  useEffect(() => { fetch('/api/status').then((response) => response.json()).then((data) => setApiStatus({ configured: Boolean(data.configured), model: data.model || 'deepseek-v4-flash' })).catch(() => undefined) }, [])
+  useEffect(() => { if (!playing) return; const timer = window.setInterval(() => setProgress((value) => value >= 1 ? 0 : value + .003), 60); return () => window.clearInterval(timer) }, [playing])
+  useEffect(() => () => { runToken.current += 1 }, [])
 
-  useEffect(() => {
-    fetch('/api/status')
-      .then((response) => response.ok ? response.json() : Promise.reject())
-      .then((data) => setApiStatus({ configured: Boolean(data.configured), model: data.model || 'deepseek-v4-flash' }))
-      .catch(() => setApiStatus({ configured: false, model: 'deepseek-v4-flash' }))
-  }, [])
+  const generatedCode = useMemo(() => {
+    if (uploaded) return `const edit = defineVideo({\n  source: "${uploaded.name}",\n  fps: 30, duration: 24,\n  operations: [\n${editOps.smartCrop ? '    smartCrop({ subject: "auto", ratio: "16:9" }),\n' : ''}${editOps.color ? '    colorGrade({ contrast: 1.08, warmth: -0.06 }),\n' : ''}${editOps.captions ? '    captions({ source: "speech", style: "bold-center" }),\n' : ''}${editOps.motion ? '    motionFrame({ enter: spring(18), tracking: true }),\n' : ''}  ],\n});`
+    if (activeDemo === 'math') return `export const DerivativeScene = ({ frame }) => {\n  const t = interpolate(frame, [0, 540], [0, 1]);\n  const x = 205 + t * 380;\n  const y = curve(x);\n\n  return <Scene background="#071015">\n    <FunctionPlot fn={x => x * x} draw={t} />\n    <Tangent point={[x, y]} glow="#64d8ef" />\n    <DeltaGuide dx={88} progress={t} />\n    <Formula>f′(x) = lim Δy / Δx</Formula>\n  </Scene>;\n};`
+    return `export const ProductLaunch = ({ frame }) => {\n  const enter = spring({ frame, fps: 30, damping: 18 });\n  const float = Math.sin(frame / 18) * 7;\n\n  return <Scene palette="coral-night">\n    <Headline reveal={enter}>Ideas move\\nat your speed.</Headline>\n    <DeviceMockup y={float} data={featureCards} />\n    <CTA at={90}>MEET FLUX</CTA>\n  </Scene>;\n};`
+  }, [activeDemo, editOps, uploaded])
 
-  useEffect(() => () => {
-    window.clearTimeout(timerRef.current)
-    runTokenRef.current += 1
-  }, [])
-
-  const timelinePosition = useMemo(() => `${Math.round(progress * 100)}%`, [progress])
-
-  const delay = (milliseconds: number, token: number) => new Promise<boolean>((resolve) => {
-    timerRef.current = window.setTimeout(() => resolve(runTokenRef.current === token), milliseconds)
-  })
-
-  const runEvolution = async (sourcePlan: AgentPlan, brief: string, token: number, localOnly = false) => {
-    setStage('evaluating')
-    setAgentTab('evolution')
-    setEvolution((previous) => ({
-      ...previous,
-      mutations: [],
-      evolvedPlan: sourcePlan,
-      rationale: '正在检查画面层级、节奏、构图与连续性…',
-    }))
-    if (!await delay(750, token)) return
-    let data: EvolutionResult
-    if (localOnly) {
-      data = createLocalEvolution(brief, sourcePlan, evolution)
-    } else try {
-      const response = await fetch('/api/evolve', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: brief, plan: sourcePlan, previousEvolution: evolution }),
-      })
-      const apiData = await response.json()
-      if (!response.ok) throw new Error(apiData.error || '自进化失败')
-      data = apiData
-    } catch {
-      data = createLocalEvolution(brief, sourcePlan, evolution)
-    }
-    if (runTokenRef.current !== token) return
-    setStage('evolving')
-    setEvolution(data)
-    if (!await delay(1350, token)) return
-    setPlan(data.evolvedPlan)
-    setStage('ready')
-    setIsPlaying(true)
-    setProgress(1)
+  const selectDemo = (id: DemoId) => {
+    if (uploaded?.url) URL.revokeObjectURL(uploaded.url)
+    setUploaded(null); setActiveDemo(id); setPrompt(DEMOS[id].prompt); setPlan(buildLocalPlan(DEMOS[id].prompt, id))
+    setStage('idle'); setActiveStep(-1); setProgress(.24); setCompareMode('split')
   }
 
-  const runSteps = async (nextPlan: AgentPlan, brief: string, token: number, shouldEvolve: boolean, localOnly: boolean) => {
-    setStage('executing')
-    for (let index = 0; index < nextPlan.steps.length; index += 1) {
-      if (runTokenRef.current !== token) return
-      setActiveStep(index)
-      setProgress(Math.min(.9, .1 + index * .145))
-      if (!await delay(720, token)) return
-    }
-    setActiveStep(nextPlan.steps.length)
-    if (shouldEvolve) await runEvolution(nextPlan, brief, token, localOnly)
-    else {
-      setStage('ready')
-      setProgress(1)
-      setIsPlaying(true)
-    }
+  const handleUpload = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]; if (!file) return
+    if (uploaded?.url) URL.revokeObjectURL(uploaded.url)
+    const media = { name: file.name, url: URL.createObjectURL(file), size: formatBytes(file.size) }
+    setUploaded(media); setPlan(buildLocalPlan(`对 ${file.name} 进行代码驱动剪辑`, 'upload'))
+    setPrompt(`剪辑 ${file.name}：智能裁切、自动字幕、轻量调色，保留原片真实内容。`)
+    setStage('idle'); setActiveStep(-1); setProgress(.08); setCompareMode('split'); event.target.value = ''
   }
 
-  const generate = async (briefOverride?: string, forceEvolve = false, localOnly = false) => {
-    const brief = (briefOverride || prompt).trim()
-    if (!brief || isRunning) return
-    const token = runTokenRef.current + 1
-    runTokenRef.current = token
-    lastRunLocalRef.current = localOnly
-    window.clearTimeout(timerRef.current)
-    setError('')
-    setStage('planning')
-    setAgentTab('plan')
-    setIsPlaying(false)
-    setActiveStep(0)
-    setProgress(.08)
-    setEvolution({ ...initialEvolution, evolvedPlan: initialPlan })
-    let data: AgentPlan
-    if (localOnly) {
-      data = createLocalPlan(brief)
-    } else try {
-      const response = await fetch('/api/plan', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: brief }),
-      })
-      const apiData = await response.json()
-      if (!response.ok) throw new Error(apiData.error || '计划生成失败')
-      data = apiData
-    } catch {
-      data = createLocalPlan(brief)
-    }
-    if (runTokenRef.current !== token) return
-    setPlan(data)
-    if (!await delay(420, token)) return
-    await runSteps(data, brief, token, forceEvolve || autoEvolve, localOnly)
+  const generate = async (localOnly = false) => {
+    if (!prompt.trim() || isRunning) return
+    const token = ++runToken.current; setStage('planning'); setPlaying(false); setActiveStep(0); setProgress(.06)
+    let nextPlan = buildLocalPlan(prompt, sourceType)
+    if (!localOnly && apiStatus.configured) try {
+      const response = await fetch('/api/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt }) })
+      if (response.ok) nextPlan = await response.json()
+    } catch { /* deterministic fallback stays active */ }
+    if (runToken.current !== token) return
+    setPlan(nextPlan); await new Promise((resolve) => window.setTimeout(resolve, 450)); setStage('building')
+    for (let index = 0; index < nextPlan.steps.length; index += 1) { if (runToken.current !== token) return; setActiveStep(index); setProgress(.12 + index * .12); await new Promise((resolve) => window.setTimeout(resolve, 420)) }
+    setStage('checking'); setActiveStep(nextPlan.steps.length); await new Promise((resolve) => window.setTimeout(resolve, 650))
+    if (runToken.current !== token) return
+    setStage('ready'); setProgress(1); setPlaying(true); setCompareMode('after'); setPanelTab('code')
   }
 
-  const startFullDemo = () => {
-    const demoPrompt = samples[0]
-    setPrompt(demoPrompt)
-    setAutoEvolve(true)
-    generate(demoPrompt, true, true)
+  const reset = () => { runToken.current += 1; setStage('idle'); setActiveStep(-1); setProgress(.25); setPlaying(true); setCompareMode('split') }
+  const downloadProject = () => {
+    const project = { schema: 'axiom-cut/v0.3', source: uploaded ? { name: uploaded.name, size: uploaded.size, localOnly: true } : { demo: activeDemo }, prompt, plan, operations: editOps, code: generatedCode }
+    const url = URL.createObjectURL(new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' }))
+    const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'axiom-cut-code-project.json'; anchor.click(); URL.revokeObjectURL(url)
   }
+  const renderScene = (variant: 'before' | 'after') => uploaded ? <UploadedScene media={uploaded} variant={variant} playing={playing} ops={editOps} /> : activeDemo === 'math' ? <MathScene variant={variant} progress={progress} /> : <ProductScene variant={variant} progress={progress} />
+  const stageText = { idle: ['READY', '等待剪辑指令'], planning: ['PLAN', '分析素材与叙事'], building: ['BUILD', `生成代码图层 ${Math.min(activeStep + 1, 6)}/6`], checking: ['VERIFY', '检查确定性输出'], ready: ['READY', '代码工程已锁定'] }[stage]
 
-  const evolveAgain = () => {
-    if (isRunning) return
-    const token = runTokenRef.current + 1
-    runTokenRef.current = token
-    setIsPlaying(false)
-    runEvolution(plan, prompt, token, lastRunLocalRef.current)
-  }
-
-  const reset = () => {
-    runTokenRef.current += 1
-    window.clearTimeout(timerRef.current)
-    setPlan(initialPlan)
-    setEvolution({ ...initialEvolution, evolvedPlan: initialPlan })
-    setStage('idle')
-    setActiveStep(-1)
-    setIsPlaying(true)
-    setProgress(.38)
-    setAgentTab('plan')
-    setError('')
-  }
-
-  const downloadManifest = () => {
-    const manifest = { project: plan.projectTitle, prompt, version: evolution.version, qualityScore: evolution.score, plan, evolution, exportedAt: new Date().toISOString() }
-    const url = URL.createObjectURL(new Blob([JSON.stringify(manifest, null, 2)], { type: 'application/json' }))
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = 'axiom-cut-project.json'
-    anchor.click()
-    URL.revokeObjectURL(url)
-  }
-
-  const stageMessage = {
-    idle: { eyebrow: 'READY TO CREATE', title: '从一句话开始创作', detail: '输入主题，Agent 会完成规划、动画与自进化。' },
-    planning: { eyebrow: 'UNDERSTANDING', title: '正在理解你的创作意图', detail: '提取主题、画幅、节奏与视觉语言。' },
-    executing: { eyebrow: `CREATING · ${Math.min(activeStep + 1, plan.steps.length)}/${plan.steps.length}`, title: plan.steps[Math.min(activeStep, plan.steps.length - 1)]?.title || '正在创作', detail: plan.steps[Math.min(activeStep, plan.steps.length - 1)]?.detail || '' },
-    evaluating: { eyebrow: 'VISUAL CRITIC', title: '正在观看并评价成片', detail: '从叙事、构图、节奏和连续性四个维度检查。' },
-    evolving: { eyebrow: 'EVOLUTION', title: '正在选择最优变体', detail: '比较三个候选版本，并记录选择理由。' },
-    ready: { eyebrow: `COMPLETE · ${evolution.version}`, title: '成片已完成并通过自评', detail: `综合质量 ${evolution.score.toFixed(1)}，可继续进化或导出工程。` },
-  }[stage]
-
-  const stageProgress = { idle: 0, planning: 8, executing: 12 + completedCount / plan.steps.length * 58, evaluating: 76, evolving: 88, ready: 100 }[stage]
-
-  return (
-    <div className="studio-shell">
-      <header className="studio-topbar">
-        <div className="studio-brand"><div className="brand-symbol">∑</div><div><strong>AXIOM CUT</strong><span>MATHEMATICAL FILM STUDIO</span></div></div>
-        <div className="project-context"><span className="live-dot" /><strong>{plan.projectTitle}</strong><span>·</span><span>18 秒横版</span><ChevronDown size={15} /></div>
-        <div className="studio-actions">
-          <div className={`provider-status ${apiStatus.configured ? 'connected' : ''}`}><Zap size={14} /><span>{apiStatus.configured ? 'DeepSeek 已配置' : '本地演示'}</span><i>{apiStatus.configured ? 'READY' : 'DEMO'}</i></div>
-          <button className={`evolve-switch ${autoEvolve ? 'on' : ''}`} onClick={() => setAutoEvolve((value) => !value)}><BrainCircuit size={15} /> 自进化 <span>{autoEvolve ? '开启' : '关闭'}</span></button>
-          <button className="run-demo" onClick={startFullDemo} disabled={isRunning}><Rocket size={16} /> 完整演示</button>
-          <button className="export-primary" onClick={() => setShowExport(true)} disabled={stage !== 'ready'}><Download size={16} /> 导出</button>
-        </div>
-      </header>
-
-      <main className="studio-main">
-        <nav className="tool-rail" aria-label="工作区导航">
-          <button className="rail-button active" aria-label="画布"><LayoutGrid size={21} /><span>画布</span></button>
-          <button className="rail-button" aria-label="场景"><Video size={21} /><span>场景</span></button>
-          <button className="rail-button" aria-label="素材"><Image size={21} /><span>素材</span></button>
-          <button className="rail-button" aria-label="声音"><Volume2 size={21} /><span>声音</span></button>
-          <div className="rail-divider" />
-          <button className="rail-button" aria-label="对话"><MessageSquareText size={21} /><span>对话</span></button>
-          <button className="rail-button" aria-label="检查"><PanelRight size={21} /><span>检查</span></button>
-          <div className="rail-spacer" />
-          <button className="rail-button" aria-label="上传素材"><UploadCloud size={21} /><span>上传</span></button>
-          <button className="rail-avatar" aria-label="个人设置">A</button>
-        </nav>
-
-        <section className="canvas-column">
-          <div className="canvas-head">
-            <div><span>SCENE 03 / 04</span><h1>复指数的几何意义</h1></div>
-            <div className="canvas-tools"><button><Layers3 size={16} /> 图层</button><button><Code2 size={16} /> 代码</button><button aria-label="全屏"><Maximize2 size={17} /></button></div>
-          </div>
-
-          <div className="creative-stage">
-            <div className="film-frame">
-              <MathScene playing={isPlaying} progress={progress} equation={plan.equation} accent={plan.accent} version={evolution.version} score={evolution.score} evolved={stage === 'ready' && evolution.delta > 0} />
-              <div className="format-pill"><span /> 1920 × 1080 · 30 FPS</div>
-              <div className={`creation-status ${stage}`}>
-                <div className="status-orb">{isRunning ? <span className="spinner" /> : stage === 'ready' ? <Check size={16} /> : <Sparkles size={16} />}</div>
-                <div><span>{stageMessage.eyebrow}</span><strong>{stageMessage.title}</strong><p>{stageMessage.detail}</p></div>
-                <b>{Math.round(stageProgress)}%</b>
-                <div className="creation-progress"><span style={{ width: `${stageProgress}%` }} /></div>
-              </div>
-            </div>
-
-            <div className="creation-composer">
-              <div className="composer-spark"><WandSparkles size={20} /></div>
-              <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => {
-                if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); generate() }
-              }} aria-label="描述想要的动画" placeholder="描述你想制作的数学动画…" />
-              <div className="composer-meta">
-                <button onClick={() => setShowSamples((value) => !value)}><Sparkles size={14} /> 灵感示例 <ChevronDown size={13} /></button>
-                <span>{apiStatus.configured ? `将使用 ${apiStatus.model}` : '使用本地演示 Agent'}</span>
-              </div>
-              <button className="create-button" onClick={() => generate()} disabled={isRunning || !prompt.trim()} aria-label="开始创作">{isRunning ? <span className="spinner light" /> : <ArrowUp size={20} />}</button>
-              {showSamples && <div className="idea-menu"><div><strong>选择一个创作方向</strong><button onClick={() => setShowSamples(false)}><X size={16} /></button></div>{samples.map((sample) => <button key={sample} onClick={() => { setPrompt(sample); setShowSamples(false) }}>{sample}</button>)}</div>}
-            </div>
-            {error && <div className="error-banner">{error}</div>}
-          </div>
-
-          <div className="timeline-panel">
-            <div className="timeline-controls">
-              <button onClick={() => setProgress(0)} aria-label="回到开始"><RotateCcw size={17} /></button>
-              <button className="timeline-play" onClick={() => setIsPlaying((value) => !value)} aria-label={isPlaying ? '暂停' : '播放'}>{isPlaying ? <Pause size={17} fill="currentColor" /> : <Play size={17} fill="currentColor" />}</button>
-              <strong>00:{String(Math.round(progress * 18)).padStart(2, '0')}:12</strong><span>/ 00:18:00</span>
-              <div className="scene-tabs">{['引入', '单位圆', '复指数', '结论'].map((item, index) => <button className={index === 2 ? 'active' : ''} key={item}>{String(index + 1).padStart(2, '0')} {item}</button>)}</div>
-            </div>
-            <div className="timeline-tracks">
-              <div className="timeline-label"><Film size={15} /> 画面</div>
-              <div className="timeline-clips"><div className="timeline-clip cyan" style={{ width: '18%' }}>引入</div><div className="timeline-clip yellow" style={{ width: '24%' }}>单位圆</div><div className="timeline-clip green" style={{ width: '37%' }}>复指数</div><div className="timeline-clip purple" style={{ flex: 1 }}>结论</div><div className="timeline-cursor" style={{ left: timelinePosition }} /></div>
-              <div className="timeline-label"><AudioLines size={15} /> 声音</div>
-              <div className="audio-line"><span className="waveform" /></div>
-            </div>
-          </div>
-        </section>
-
-        <aside className="director-panel">
-          <div className="director-head"><div className="director-icon"><BrainCircuit size={21} /></div><div><span>EVOLUTION DIRECTOR</span><h2>创作过程</h2></div><button onClick={reset}>重置</button></div>
-          <div className="director-tabs"><button className={agentTab === 'plan' ? 'active' : ''} onClick={() => setAgentTab('plan')}><Cpu size={16} /> 执行计划 <span>{completedCount}/{plan.steps.length}</span></button><button className={agentTab === 'evolution' ? 'active' : ''} onClick={() => setAgentTab('evolution')}><FlaskConical size={16} /> 自进化 <span>{evolution.version}</span></button></div>
-
-          <div className="director-scroll">
-            <div className={`stage-card ${stage}`}><div className="stage-card-top"><span>{stageMessage.eyebrow}</span><b>{statusLabel}</b></div><h3>{stageMessage.title}</h3><p>{stageMessage.detail}</p><div className="stage-card-progress"><span style={{ width: `${stageProgress}%` }} /></div></div>
-
-            {agentTab === 'plan' ? <>
-              <div className="brief-card"><span>创作任务</span><p>{plan.summary}</p><div><i>16:9</i><i>18 秒</i><i>数学动画</i>{autoEvolve && <i className="auto-tag">自动进化</i>}</div></div>
-              <div className="large-step-list">{plan.steps.map((step, index) => {
-                const done = activeStep > index || activeStep >= plan.steps.length
-                const active = stage === 'executing' && activeStep === index
-                return <div className={`large-step ${done ? 'done' : ''} ${active ? 'active' : ''}`} key={step.id}><div className="large-marker">{done ? <Check size={15} /> : active ? <span className="spinner" /> : String(index + 1).padStart(2, '0')}</div><div><strong>{step.title}</strong><p>{step.detail}</p></div><span>{step.tool}<small>{step.duration}</small></span></div>
-              })}</div>
-              <div className="safe-note"><ShieldCheck size={18} /><p><strong>全过程可解释</strong>每一步、评分和进化选择都会保留记录。</p></div>
-            </> : <div className="evolution-view">
-              <div className="score-hero"><div className="big-score"><strong>{evolution.score.toFixed(1)}</strong><span>综合质量</span></div><div><span>当前版本</span><strong>{evolution.version}</strong><p>{evolution.delta > 0 ? `比 ${evolution.previousVersion} 提升 ${evolution.delta.toFixed(1)} 分` : '运行演示后生成新版本'}</p></div></div>
-              <div className="section-title"><span>画面自评</span><small>4 个维度</small></div>
-              <div className="metric-list">{evolution.metrics.map((metric) => <div className="metric-row" key={metric.label}><div><span>{metric.label}</span><strong>{metric.value}</strong></div><div><span style={{ width: `${metric.value}%` }} /></div></div>)}</div>
-              <div className="section-title"><span>候选变体</span><small>{evolution.mutations.length ? '已选择 1 个' : '等待分析'}</small></div>
-              <div className="candidate-list">{evolution.mutations.length ? evolution.mutations.map((mutation) => <div className={`candidate ${mutation.selected ? 'selected' : ''}`} key={mutation.id}><span>{mutation.id}</span><div><strong>{mutation.title}</strong><p>{mutation.detail}</p></div><b>{mutation.expectedGain}</b>{mutation.selected && <CheckCircle2 size={17} />}</div>) : <div className="empty-evolution"><FlaskConical size={26} /><strong>还没有进化记录</strong><p>点击顶部“完整演示”，观看 Agent 评价并优化自己的作品。</p></div>}</div>
-              {evolution.mutations.length > 0 && <><div className="decision-card"><Eye size={18} /><p><strong>为什么选择它</strong>{evolution.rationale}</p></div><div className="memory-card"><div><History size={17} /><strong>已学到的项目偏好</strong></div>{evolution.memory.map((item) => <span key={item}>{item}</span>)}</div></>}
-              <button className="evolve-next" onClick={evolveAgain} disabled={isRunning || stage === 'idle'}><BrainCircuit size={17} /> 再进化一轮</button>
-            </div>}
-          </div>
-        </aside>
-      </main>
-
-      {showExport && <div className="modal-backdrop" role="presentation" onMouseDown={() => setShowExport(false)}><div className="export-modal" role="dialog" aria-modal="true" aria-label="导出成片" onMouseDown={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setShowExport(false)} aria-label="关闭"><X size={18} /></button><div className="render-orbit"><span /><span /><CheckCircle2 size={28} /></div><span className="modal-kicker">RENDER COMPLETE</span><h3>{plan.projectTitle}</h3><p>最佳版本 {evolution.version} 已通过视觉检查，时间线与自进化记录已锁定。</p><div className="render-stats"><div><span>QUALITY</span><strong>{evolution.score.toFixed(1)}</strong></div><div><span>FORMAT</span><strong>1080P</strong></div><div><span>DURATION</span><strong>00:18</strong></div><div><span>VERSION</span><strong>{evolution.version}</strong></div></div><div className="render-file"><Film size={19} /><div><strong>axiom-euler-{evolution.version}.mp4</strong><span>H.264 · 12.8 MB · 演示渲染</span></div><Check size={17} /></div><button className="download-manifest" onClick={downloadManifest}><Download size={17} /> 下载可复现工程 JSON</button><small>当前导出工程数据；接入 Remotion 后可用同一时间线渲染真实 MP4。</small></div></div>}
-    </div>
-  )
+  return <div className="app-shell">
+    <header className="topbar"><div className="brand"><div className="brand-mark"><Scissors size={18} /></div><div><strong>AXIOM CUT</strong><span>CODE-DIRECTED VIDEO</span></div></div><div className="project-switcher"><span className="project-dot" /><strong>{projectTitle}</strong><ChevronDown size={14} /></div><div className="top-actions"><div className="engine-badge"><Code2 size={14} /><span>CODE RENDER</span><i>DETERMINISTIC</i></div><div className={`api-badge ${apiStatus.configured ? 'online' : ''}`}><Zap size={13} />{apiStatus.configured ? 'DeepSeek Ready' : 'Local Mode'}</div><a className="icon-link" href="https://github.com/BenCraf/axiom-cut" target="_blank" rel="noreferrer" aria-label="GitHub"><Github size={18} /></a><button className="export-button" onClick={() => setShowExport(true)}><Download size={16} /> 导出工程</button></div></header>
+    <main className="workspace">
+      <aside className="media-panel"><div className="panel-title"><div><span>MEDIA</span><h2>素材与案例</h2></div><button><Plus size={16} /></button></div><input ref={fileRef} type="file" accept="video/*" onChange={handleUpload} hidden /><button className="upload-zone" onClick={() => fileRef.current?.click()}><div><Upload size={20} /></div><strong>上传本地视频</strong><span>MP4 / MOV / WebM · 不上传云端</span></button>
+        {uploaded && <div className="uploaded-file"><div className="file-thumb"><Video size={20} /></div><div><strong>{uploaded.name}</strong><span>{uploaded.size} · 本地素材</span></div><button onClick={() => selectDemo(activeDemo)}><X size={14} /></button></div>}
+        <div className="library-label"><span>对比 Demo</span><b>2</b></div>{(Object.values(DEMOS) as (typeof DEMOS)[DemoId][]).map((item) => <button className={`demo-card ${!uploaded && activeDemo === item.id ? 'active' : ''}`} key={item.id} onClick={() => selectDemo(item.id)}><div className={`demo-thumb ${item.id}`}><span>{item.id === 'math' ? 'f′(x)' : 'FLUX'}</span><CirclePlay size={21} /></div><div><span>{item.label}</span><strong>{item.title}</strong><p>{item.description}</p></div></button>)}
+        <div className="library-label"><span>代码操作</span><b>4</b></div><div className="operation-list">{([['captions', '自动字幕', '语音 → 时间码'], ['smartCrop', '主体裁切', '跟踪 → 16:9'], ['color', '程序调色', '参数 → LUT'], ['motion', '运动图形', 'SVG → 关键帧']] as [keyof EditOps, string, string][]).map(([key, title, detail]) => <button key={key} className={editOps[key] ? 'enabled' : ''} onClick={() => setEditOps((value) => ({ ...value, [key]: !value[key] }))}><span><Check size={11} /></span><div><strong>{title}</strong><small>{detail}</small></div></button>)}</div><div className="privacy-note"><ShieldCheck size={16} /><p><strong>素材默认留在浏览器</strong>Demo 只读取本地 Object URL，不把视频传给模型。</p></div>
+      </aside>
+      <section className="editor-column"><div className="editor-head"><div><span>{uploaded ? 'UPLOADED VIDEO' : demo.label.toUpperCase()}</span><h1>{projectTitle}</h1></div><div className="view-switcher"><button className={compareMode === 'before' ? 'active' : ''} onClick={() => setCompareMode('before')}>原片</button><button className={compareMode === 'split' ? 'active' : ''} onClick={() => setCompareMode('split')}><SplitSquareHorizontal size={14} /> 对比</button><button className={compareMode === 'after' ? 'active' : ''} onClick={() => setCompareMode('after')}>代码增强</button></div><button className="more-button" aria-label="更多"><MoreHorizontal size={18} /></button></div>
+        <div className="preview-stage"><div className={`preview-frame mode-${compareMode}`}>{(compareMode === 'before' || compareMode === 'split') && <div className="compare-pane before-pane"><span className="compare-label">ORIGINAL</span>{renderScene('before')}</div>}{(compareMode === 'after' || compareMode === 'split') && <div className="compare-pane after-pane"><span className="compare-label code">CODE EDIT</span>{renderScene('after')}</div>}{compareMode === 'split' && <div className="compare-divider"><span><SplitSquareHorizontal size={13} /></span></div>}</div><div className={`render-status ${stage}`}><span className="status-light" /><div><small>{stageText[0]}</small><strong>{stageText[1]}</strong></div><b>{stage === 'ready' ? '100%' : stage === 'idle' ? '—' : `${Math.round((activeStep + 1) / 7 * 100)}%`}</b></div></div>
+        <div className="transport"><button onClick={() => setProgress(0)}><RefreshCw size={15} /></button><button className="play-button" onClick={() => setPlaying((value) => !value)}>{playing ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />}</button><strong>00:{String(Math.round(progress * duration)).padStart(2, '0')}:12</strong><span>/ 00:{String(duration).padStart(2, '0')}:00</span><div className="transport-progress"><i style={{ width: `${progress * 100}%` }} /><b style={{ left: `${progress * 100}%` }} /></div><button><MonitorPlay size={16} /></button><button><Gauge size={16} /></button></div>
+        <div className="bottom-panel"><div className="bottom-tabs"><button className={panelTab === 'timeline' ? 'active' : ''} onClick={() => setPanelTab('timeline')}><Layers3 size={15} /> 代码时间线</button><button className={panelTab === 'code' ? 'active' : ''} onClick={() => setPanelTab('code')}><FileCode2 size={15} /> scene.tsx</button><span>{uploaded ? '1 source · 4 operations' : '0 raster assets · 100% vector'}</span></div>{panelTab === 'timeline' ? <div className="code-timeline"><div className="track-label"><Video size={14} /><span>SOURCE</span></div><div className="track"><div className="clip source">{uploaded ? uploaded.name : activeDemo === 'math' ? 'coordinate-system.svg' : 'product-layout.tsx'}</div><i style={{ left: `${progress * 100}%` }} /></div><div className="track-label"><Code2 size={14} /><span>LAYERS</span></div><div className="track"><div className="clip coral">title.reveal()</div><div className="clip cyan">motion.track()</div><div className="clip purple">caption.sync()</div><i style={{ left: `${progress * 100}%` }} /></div><div className="track-label"><Zap size={14} /><span>FX</span></div><div className="track"><div className="clip fx">color.grade()</div><div className="clip fx short">safeArea.check()</div><i style={{ left: `${progress * 100}%` }} /></div></div> : <div className="code-view"><div className="code-gutter">{generatedCode.split('\n').map((_, index) => <span key={index}>{index + 1}</span>)}</div><pre><code>{generatedCode}</code></pre><div className="code-proof"><Check size={13} /> Deterministic · frame-based · no generated pixels</div></div>}</div>
+      </section>
+      <aside className="agent-panel"><div className="agent-head"><div className="agent-icon"><BrainCircuit size={20} /></div><div><span>DIRECTOR AGENT</span><h2>代码剪辑</h2></div><button onClick={reset}>重置</button></div><div className="prompt-box"><div><WandSparkles size={18} /><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="描述你想怎么剪…" /></div><footer><span>{apiStatus.configured ? apiStatus.model : 'local deterministic'}</span><button onClick={() => generate(false)} disabled={isRunning || !prompt.trim()}>{isRunning ? <RefreshCw className="spin" size={16} /> : <ArrowUp size={17} />}</button></footer></div><div className="agent-scroll"><div className="source-summary"><span>SOURCE</span><div><Film size={17} /><p><strong>{uploaded ? uploaded.name : `${demo.label} · 内置`}</strong><small>{uploaded ? `${uploaded.size} · 本地读取` : 'React / SVG scene spec'}</small></p><i>{uploaded ? 'VIDEO' : 'CODE'}</i></div></div><div className="plan-header"><span>执行计划</span><b>{Math.max(0, Math.min(activeStep + (stage === 'ready' ? 1 : 0), 6))}/6</b></div><div className="plan-steps">{plan.steps.map((step, index) => { const done = stage === 'ready' || activeStep > index; const active = isRunning && activeStep === index; return <div className={`plan-step ${done ? 'done' : ''} ${active ? 'active' : ''}`} key={step.id}><div>{done ? <Check size={12} /> : String(index + 1).padStart(2, '0')}</div><p><strong>{step.title}</strong><span>{step.detail}</span></p><code>{step.tool}</code></div> })}</div><div className="render-contract"><div><ShieldCheck size={17} /><strong>渲染契约</strong><span>可验证</span></div><ul><li><Check size={12} /> 所有图形来自 SVG / CSS</li><li><Check size={12} /> 所有运动按 frame 计算</li><li><Check size={12} /> 模型只生成计划与参数</li><li><Check size={12} /> 上传素材不进入模型上下文</li></ul></div><div className="engine-card"><span>RENDER ENGINE</span><strong>{uploaded ? 'Video + SVG Overlay' : activeDemo === 'math' ? 'React SVG · 30 fps' : 'React Layout · 30 fps'}</strong><p>相同输入会得到相同画面，不依赖生图模型补全。</p><button onClick={() => setPanelTab('code')}><Code2 size={14} /> 查看生成代码</button></div></div></aside>
+    </main>
+    {showExport && <div className="modal-backdrop" onMouseDown={() => setShowExport(false)}><div className="export-modal" onMouseDown={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setShowExport(false)}><X size={18} /></button><div className="export-icon"><FileCode2 size={27} /></div><span>REPRODUCIBLE PROJECT</span><h2>导出代码剪辑工程</h2><p>包含场景代码、时间线、操作参数和素材引用。上传的视频本体不会写入导出文件。</p><div className="export-grid"><div><span>SCHEMA</span><strong>v0.3</strong></div><div><span>LAYERS</span><strong>{uploaded ? 5 : 7}</strong></div><div><span>FPS</span><strong>30</strong></div></div><button className="download-project" onClick={downloadProject}><Download size={17} /> 下载工程 JSON</button><small>真实 MP4 渲染接口将在 Remotion worker 接入后启用。</small></div></div>}
+  </div>
 }
 
 export default App

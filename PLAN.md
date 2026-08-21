@@ -1,8 +1,13 @@
 # Delivery plan
 
-## Current: v0.2 — complete interactive demo
+## Current: v0.3 — code-directed editing workspace
 
-- [x] Mathematical animation editor UI
+- [x] General video editing UI with local video upload
+- [x] Original / split / code-enhanced comparison modes
+- [x] Product-launch comparison demo
+- [x] Derivative/local-linearity SVG comparison demo
+- [x] Visible generated scene code and code timeline
+- [x] Toggleable captions, crop, color, and motion operations
 - [x] Natural-language brief and six-step execution plan
 - [x] Current-step and pipeline observability
 - [x] DeepSeek planning endpoint
@@ -13,10 +18,11 @@
 - [x] Static fallback without API credentials
 - [x] Reproducible project JSON export
 
-## Next: v0.3 — real editing tools
+## Next: v0.4 — real rendering tools
 
 - [ ] Generate Remotion compositions from the approved plan
-- [ ] Add asset upload and media metadata inspection
+- [x] Add local asset upload and browser preview
+- [ ] Add media metadata, speech transcription, and shot inspection
 - [ ] Render preview frames and feed them into the visual critic
 - [ ] Add explicit approve/reject/rollback controls
 
