@@ -6,12 +6,98 @@
   "fps": 24,
   "resolution": "1280x720",
   "source": {
-    "creator": "khanhhoangminh",
+    "creator": {
+      "name": "khanhhoangminh",
+      "profile": "https://www.pexels.com/@khanhhoangminh/"
+    },
     "provider": "Pexels",
     "license": "https://www.pexels.com/license/",
-    "wide": "https://www.pexels.com/video/women-dancing-in-studio-13648588/",
-    "close": "https://www.pexels.com/video/dancers-practising-dance-routine-13648585/",
-    "endorsement": false
+    "endorsement": false,
+    "items": [
+      {
+        "id": "13648581",
+        "set": "rooftop",
+        "page": "https://www.pexels.com/video/women-practising-synchronic-dance-13648581/",
+        "proxy": "library/source-13648581.mp4"
+      },
+      {
+        "id": "13648582",
+        "set": "neon-indoor",
+        "page": "https://www.pexels.com/video/x-13648582/",
+        "proxy": "library/source-13648582.mp4"
+      },
+      {
+        "id": "13648583",
+        "set": "rooftop",
+        "page": "https://www.pexels.com/video/group-of-young-women-dancing-13648583/",
+        "proxy": "library/source-13648583.mp4"
+      },
+      {
+        "id": "13648584",
+        "set": "neon-indoor",
+        "page": "https://www.pexels.com/video/performance-with-synchronic-dancing-13648584/",
+        "proxy": "library/alternate-source.mp4"
+      },
+      {
+        "id": "13648585",
+        "set": "neon-indoor",
+        "page": "https://www.pexels.com/video/dancers-practising-dance-routine-13648585/",
+        "proxy": "library/close-source.mp4"
+      },
+      {
+        "id": "13648586",
+        "set": "rooftop",
+        "page": "https://www.pexels.com/video/x-13648586/",
+        "proxy": "library/source-13648586.mp4"
+      },
+      {
+        "id": "13648587",
+        "set": "rooftop",
+        "page": "https://www.pexels.com/video/x-13648587/",
+        "proxy": "library/source-13648587.mp4"
+      },
+      {
+        "id": "13648588",
+        "set": "neon-indoor",
+        "page": "https://www.pexels.com/video/women-dancing-in-studio-13648588/",
+        "proxy": "library/wide-source.mp4"
+      },
+      {
+        "id": "13648589",
+        "set": "rooftop",
+        "page": "https://www.pexels.com/video/dancers-in-black-costumes-13648589/",
+        "proxy": "library/source-13648589.mp4"
+      }
+    ]
+  },
+  "library": {
+    "builtInAssetCount": 10,
+    "sourceProxyCount": 9,
+    "agentResultCount": 1,
+    "autoAddToTimeline": false,
+    "sourceProxy": {
+      "duration": "full",
+      "resolution": "1280x720",
+      "fps": 24,
+      "audio": false
+    },
+    "groups": [
+      {
+        "id": "neon-indoor",
+        "count": 4,
+        "sourceIds": ["13648582", "13648584", "13648585", "13648588"]
+      },
+      {
+        "id": "rooftop",
+        "count": 5,
+        "sourceIds": ["13648581", "13648583", "13648586", "13648587", "13648589"]
+      }
+    ],
+    "agentResult": {
+      "file": "agent-cut.mp4",
+      "duration": 14,
+      "sourceIds": ["13648585", "13648588"]
+    }
   },
   "before": {
     "mode": "continuous take",

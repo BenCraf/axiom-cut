@@ -73,6 +73,15 @@ export type StudioMedia = {
   fileUrl: string
   analysisUrl: string
   createdAt: string
+  builtIn?: boolean
+  collection?: string
+  role?: 'source' | 'result'
+  thumbnailUrl?: string
+  credit?: {
+    creator: string
+    sourceUrl: string
+    licenseUrl: string
+  }
 }
 
 export type MediaSegment = {
@@ -235,6 +244,12 @@ const requireRecord = (payload: unknown, label: string): JsonRecord => {
 
 const assertMedia = (payload: unknown): StudioMedia => {
   const media = requireRecord(unwrap(payload, 'media'), '媒体接口')
+  const creditIsValid = media.credit === undefined || (
+    isRecord(media.credit)
+    && typeof media.credit.creator === 'string'
+    && typeof media.credit.sourceUrl === 'string'
+    && typeof media.credit.licenseUrl === 'string'
+  )
   if (
     typeof media.id !== 'string'
     || typeof media.name !== 'string'
@@ -251,6 +266,11 @@ const assertMedia = (payload: unknown): StudioMedia => {
     || typeof media.fileUrl !== 'string'
     || typeof media.analysisUrl !== 'string'
     || typeof media.createdAt !== 'string'
+    || !(media.builtIn === undefined || typeof media.builtIn === 'boolean')
+    || !(media.collection === undefined || typeof media.collection === 'string')
+    || !(media.role === undefined || media.role === 'source' || media.role === 'result')
+    || !(media.thumbnailUrl === undefined || typeof media.thumbnailUrl === 'string')
+    || !creditIsValid
   ) {
     throw new StudioApiError('媒体接口返回的数据不完整。', { payload })
   }

@@ -9,10 +9,24 @@ import { spawn } from 'node:child_process'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const outputDir = join(root, 'public', 'demo', 'neon-sync')
+const libraryDir = join(outputDir, 'library')
 const cacheDir = join(tmpdir(), 'axiom-cut-neon-sync')
 const duration = 14
+const forceRebuild = process.env.AXIOM_DEMO_FORCE === '1'
 
 const sources = {
+  outdoorWideA: {
+    url: 'https://videos.pexels.com/video-files/13648581/13648581-hd_1920_1080_24fps.mp4',
+    path: join(cacheDir, '13648581-outdoor-wide-a.mp4'),
+  },
+  neonClose: {
+    url: 'https://videos.pexels.com/video-files/13648582/13648582-hd_1920_1080_24fps.mp4',
+    path: join(cacheDir, '13648582-neon-close.mp4'),
+  },
+  outdoorClose: {
+    url: 'https://videos.pexels.com/video-files/13648583/13648583-hd_1920_1080_24fps.mp4',
+    path: join(cacheDir, '13648583-outdoor-close.mp4'),
+  },
   wide: {
     url: 'https://videos.pexels.com/video-files/13648588/13648588-hd_1920_1080_24fps.mp4',
     path: join(cacheDir, '13648588-wide.mp4'),
@@ -20,6 +34,22 @@ const sources = {
   close: {
     url: 'https://videos.pexels.com/video-files/13648585/13648585-hd_1920_1080_24fps.mp4',
     path: join(cacheDir, '13648585-close.mp4'),
+  },
+  alternate: {
+    url: 'https://videos.pexels.com/video-files/13648584/13648584-hd_1920_1080_24fps.mp4',
+    path: join(cacheDir, '13648584-alternate.mp4'),
+  },
+  outdoorWideB: {
+    url: 'https://videos.pexels.com/video-files/13648586/13648586-hd_1920_1080_24fps.mp4',
+    path: join(cacheDir, '13648586-outdoor-wide-b.mp4'),
+  },
+  outdoorDuo: {
+    url: 'https://videos.pexels.com/video-files/13648587/13648587-hd_1920_1080_24fps.mp4',
+    path: join(cacheDir, '13648587-outdoor-duo.mp4'),
+  },
+  outdoorWideC: {
+    url: 'https://videos.pexels.com/video-files/13648589/13648589-hd_1920_1080_24fps.mp4',
+    path: join(cacheDir, '13648589-outdoor-wide-c.mp4'),
   },
 }
 
@@ -58,11 +88,22 @@ const exists = async (path) => {
 const download = async ({ url, path }) => {
   if (await exists(path)) return
   const temporaryPath = `${path}.part`
-  await unlink(temporaryPath).catch(() => undefined)
-  const response = await fetch(url, { redirect: 'follow' })
-  if (!response.ok || !response.body) throw new Error(`Download failed (${response.status}): ${url}`)
-  await pipeline(Readable.fromWeb(response.body), createWriteStream(temporaryPath, { flags: 'wx' }))
-  await rename(temporaryPath, path)
+  let lastError
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    await unlink(temporaryPath).catch(() => undefined)
+    try {
+      const response = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(120_000) })
+      if (!response.ok || !response.body) throw new Error(`Download failed (${response.status}): ${url}`)
+      await pipeline(Readable.fromWeb(response.body), createWriteStream(temporaryPath, { flags: 'wx' }))
+      await rename(temporaryPath, path)
+      return
+    } catch (error) {
+      lastError = error
+      await unlink(temporaryPath).catch(() => undefined)
+      if (attempt < 3) await new Promise((resolveWait) => setTimeout(resolveWait, attempt * 1_200))
+    }
+  }
+  throw lastError
 }
 
 const run = (command, args) => new Promise((resolveRun, rejectRun) => {
@@ -76,6 +117,17 @@ const run = (command, args) => new Promise((resolveRun, rejectRun) => {
 
 const rawOutput = join(outputDir, 'raw-take.mp4')
 const cutOutput = join(outputDir, 'agent-cut.mp4')
+const librarySpecs = [
+  { source: sources.outdoorWideA.path, output: join(libraryDir, 'source-13648581.mp4'), role: 'rooftop wide source A', pexelsId: '13648581' },
+  { source: sources.neonClose.path, output: join(libraryDir, 'source-13648582.mp4'), role: 'neon close source', pexelsId: '13648582' },
+  { source: sources.outdoorClose.path, output: join(libraryDir, 'source-13648583.mp4'), role: 'rooftop close source', pexelsId: '13648583' },
+  { source: sources.wide.path, output: join(libraryDir, 'wide-source.mp4'), role: 'continuous wide source', pexelsId: '13648588' },
+  { source: sources.close.path, output: join(libraryDir, 'close-source.mp4'), role: 'continuous close source', pexelsId: '13648585' },
+  { source: sources.alternate.path, output: join(libraryDir, 'alternate-source.mp4'), role: 'alternate performance source', pexelsId: '13648584' },
+  { source: sources.outdoorWideB.path, output: join(libraryDir, 'source-13648586.mp4'), role: 'rooftop wide source B', pexelsId: '13648586' },
+  { source: sources.outdoorDuo.path, output: join(libraryDir, 'source-13648587.mp4'), role: 'rooftop duo source', pexelsId: '13648587' },
+  { source: sources.outdoorWideC.path, output: join(libraryDir, 'source-13648589.mp4'), role: 'rooftop wide source C', pexelsId: '13648589' },
+]
 
 const rawVideoFilters = [
   'scale=1280:720:flags=lanczos',
@@ -141,21 +193,40 @@ const editedVideoFilters = [
   'fade=t=out:st=13.6:d=0.4',
 ].join(',')
 
-await Promise.all([mkdir(outputDir, { recursive: true }), mkdir(cacheDir, { recursive: true })])
-await Promise.all(Object.values(sources).map(download))
-
-await run('ffmpeg', [
-  '-y',
-  '-ss', '2', '-t', String(duration), '-i', sources.wide.path,
-  '-f', 'lavfi', '-t', String(duration), '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000',
-  '-filter_complex', `[0:v]${rawVideoFilters}[v];[1:a]atrim=duration=${duration},asetpts=PTS-STARTPTS[a]`,
-  '-map', '[v]', '-map', '[a]',
-  '-c:v', 'libx264', '-preset', 'medium', '-crf', '26', '-profile:v', 'high', '-pix_fmt', 'yuv420p',
-  '-c:a', 'aac', '-b:a', '96k', '-ar', '48000', '-shortest', '-movflags', '+faststart',
-  '-metadata', 'artist=khanhhoangminh / Pexels',
-  '-metadata', 'comment=Continuous source presentation for the Axiom Cut before/after demo. Not an endorsement.',
-  rawOutput,
+await Promise.all([
+  mkdir(outputDir, { recursive: true }),
+  mkdir(libraryDir, { recursive: true }),
+  mkdir(cacheDir, { recursive: true }),
 ])
+const rawNeedsBuild = forceRebuild || !(await exists(rawOutput))
+const cutNeedsBuild = forceRebuild || !(await exists(cutOutput))
+const libraryBuildState = await Promise.all(librarySpecs.map(async (spec) => ({
+  spec,
+  needsBuild: forceRebuild || !(await exists(spec.output)),
+})))
+const requiredSources = [
+  ...(rawNeedsBuild || cutNeedsBuild ? [sources.wide] : []),
+  ...(cutNeedsBuild ? [sources.close] : []),
+  ...libraryBuildState
+    .filter(({ needsBuild }) => needsBuild)
+    .map(({ spec }) => Object.values(sources).find((source) => source.path === spec.source)),
+].filter(Boolean)
+await Promise.all([...new Map(requiredSources.map((source) => [source.path, source])).values()].map(download))
+
+if (rawNeedsBuild) {
+  await run('ffmpeg', [
+    '-y',
+    '-ss', '2', '-t', String(duration), '-i', sources.wide.path,
+    '-f', 'lavfi', '-t', String(duration), '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000',
+    '-filter_complex', `[0:v]${rawVideoFilters}[v];[1:a]atrim=duration=${duration},asetpts=PTS-STARTPTS[a]`,
+    '-map', '[v]', '-map', '[a]',
+    '-c:v', 'libx264', '-preset', 'medium', '-crf', '26', '-profile:v', 'high', '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac', '-b:a', '96k', '-ar', '48000', '-shortest', '-movflags', '+faststart',
+    '-metadata', 'artist=khanhhoangminh / Pexels',
+    '-metadata', 'comment=Continuous source presentation for the Axiom Cut before/after demo. Not an endorsement.',
+    rawOutput,
+  ])
+}
 
 const concatInputs = segmentSpecs.map((_, index) => `[v${index}]`).join('')
 const synthAudio = `aevalsrc=0.34*sin(2*PI*58*t)*exp(-18*mod(t\\,0.5))+` +
@@ -163,35 +234,60 @@ const synthAudio = `aevalsrc=0.34*sin(2*PI*58*t)*exp(-18*mod(t\\,0.5))+` +
   'pan=stereo|c0=c0|c1=c0,lowpass=f=5200,volume=0.72,' +
   'afade=t=in:st=0:d=0.12,afade=t=out:st=13.35:d=0.65[aout]'
 
-await run('ffmpeg', [
-  '-y',
-  '-i', sources.wide.path,
-  '-i', sources.close.path,
-  '-filter_complex', [
-    ...segmentFilters,
-    `${concatInputs}concat=n=${segmentSpecs.length}:v=1:a=0[sequence]`,
-    `[sequence]${editedVideoFilters}[vout]`,
-    synthAudio,
-  ].join(';'),
-  '-map', '[vout]', '-map', '[aout]',
-  '-t', String(duration),
-  '-c:v', 'libx264', '-preset', 'medium', '-crf', '23', '-profile:v', 'high', '-pix_fmt', 'yuv420p',
-  '-c:a', 'aac', '-b:a', '128k', '-ar', '48000', '-movflags', '+faststart',
-  '-metadata', 'artist=khanhhoangminh / Pexels; edit by Axiom Cut',
-  '-metadata', 'comment=Code-directed multi-angle performance edit. The depicted people do not endorse Axiom Cut.',
-  cutOutput,
-])
+if (cutNeedsBuild) {
+  await run('ffmpeg', [
+    '-y',
+    '-i', sources.wide.path,
+    '-i', sources.close.path,
+    '-filter_complex', [
+      ...segmentFilters,
+      `${concatInputs}concat=n=${segmentSpecs.length}:v=1:a=0[sequence]`,
+      `[sequence]${editedVideoFilters}[vout]`,
+      synthAudio,
+    ].join(';'),
+    '-map', '[vout]', '-map', '[aout]',
+    '-t', String(duration),
+    '-c:v', 'libx264', '-preset', 'medium', '-crf', '23', '-profile:v', 'high', '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac', '-b:a', '128k', '-ar', '48000', '-movflags', '+faststart',
+    '-metadata', 'artist=khanhhoangminh / Pexels; edit by Axiom Cut',
+    '-metadata', 'comment=Code-directed multi-angle performance edit. The depicted people do not endorse Axiom Cut.',
+    cutOutput,
+  ])
+}
+
+await Promise.all(libraryBuildState.map(async ({ spec, needsBuild }) => {
+  if (!needsBuild) return
+  await run('ffmpeg', [
+    '-y', '-i', spec.source,
+    '-map', '0:v:0',
+    '-vf', 'scale=1280:720:flags=lanczos,fps=24,format=yuv420p',
+    '-c:v', 'libx264', '-preset', 'fast', '-crf', '28', '-profile:v', 'high', '-pix_fmt', 'yuv420p',
+    '-an', '-movflags', '+faststart',
+    '-metadata', 'artist=khanhhoangminh / Pexels',
+    '-metadata', `comment=Full-duration 720p demo proxy (${spec.role}, Pexels ${spec.pexelsId}). Not an endorsement.`,
+    spec.output,
+  ])
+}))
 
 await Promise.all([
   run('ffmpeg', ['-y', '-ss', '1', '-i', rawOutput, '-frames:v', '1', '-vf', 'scale=960:-1', '-c:v', 'libwebp', '-quality', '82', join(outputDir, 'raw-poster.webp')]),
   run('ffmpeg', ['-y', '-ss', '1', '-i', cutOutput, '-frames:v', '1', '-vf', 'scale=960:-1', '-c:v', 'libwebp', '-quality', '84', join(outputDir, 'cut-poster.webp')]),
+  ...librarySpecs.map((spec) => run('ffmpeg', [
+    '-y', '-ss', '1', '-i', spec.output, '-frames:v', '1', '-vf', 'scale=480:-1',
+    '-c:v', 'libwebp', '-quality', '80', spec.output.replace(/\.mp4$/, '-poster.webp'),
+  ])),
 ])
 
 const [rawStat, cutStat] = await Promise.all([stat(rawOutput), stat(cutOutput)])
+const libraryStats = await Promise.all(librarySpecs.map(async (spec) => ({
+  file: spec.output.slice(libraryDir.length + 1),
+  bytes: (await stat(spec.output)).size,
+})))
 console.log(JSON.stringify({
   ok: true,
   duration,
   rawBytes: rawStat.size,
   cutBytes: cutStat.size,
+  library: libraryStats,
   outputDir,
 }, null, 2))

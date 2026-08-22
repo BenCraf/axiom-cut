@@ -17,6 +17,7 @@ A complete, code-directed video editing Agent. Import real footage, describe the
 - Undo/redo, autosave, project JSON import/export, and version snapshots
 - Real queued FFmpeg rendering with progress, cancellation, and MP4 download
 - H.264 video, AAC audio, Chinese title/subtitle burn-in, and multi-clip concatenation
+- Built-in NEON SYNC media pack with nine full-duration 720p source proxies and one Agent result
 - A separate presentation mode with two 100% React/SVG code films and one licensed real-footage before/after film
 
 ## Run locally
@@ -90,13 +91,26 @@ Click **展示 Demo** to open the presentation-oriented films:
 - **Flux Note product launch** — a 12-second product film with staged typography, device UI, feature cards, and CTA motion.
 - **Neon Sync performance cut** — a synchronized 14-second before/after comparison built from real dance footage: a continuous wide take on the left and a seven-shot, dual-angle, color-graded, titled, beat-driven Agent edit on the right. Use the draggable split to compare both versions at the same output timecode.
 
-The first two demos are built from React/SVG frame logic. Neon Sync uses licensed Pexels footage and a fully reproducible FFmpeg build; no generated image is used. To rebuild the bundled comparison assets:
+The first two demos are built from React/SVG frame logic. Neon Sync uses licensed Pexels footage and a fully reproducible FFmpeg build; no generated image is used.
+
+The editor's built-in **NEON SYNC** library contains nine full-duration, silent 1280×720 source proxies from one verified shoot, plus the 14-second Agent result:
+
+- **Neon indoor set · 4:** [13648582](https://www.pexels.com/video/x-13648582/), [13648584](https://www.pexels.com/video/performance-with-synchronic-dancing-13648584/), [13648585](https://www.pexels.com/video/dancers-practising-dance-routine-13648585/), and [13648588](https://www.pexels.com/video/women-dancing-in-studio-13648588/)
+- **Rooftop set · 5:** [13648581](https://www.pexels.com/video/women-practising-synchronic-dance-13648581/), [13648583](https://www.pexels.com/video/group-of-young-women-dancing-13648583/), [13648586](https://www.pexels.com/video/x-13648586/), [13648587](https://www.pexels.com/video/x-13648587/), and [13648589](https://www.pexels.com/video/dancers-in-black-costumes-13648589/)
+
+These assets appear in the media library but are never added to the timeline automatically; select one and use **加入时间线** when needed. Rebuild missing assets with:
 
 ```bash
 npm run demo:neon
 ```
 
-The source takes are [Women Dancing in Studio](https://www.pexels.com/video/women-dancing-in-studio-13648588/) and [Dancers Practising Dance Routine](https://www.pexels.com/video/dancers-practising-dance-routine-13648585/) by khanhhoangminh. They are used under the [Pexels license](https://www.pexels.com/license/), which permits modification and use in this demo. Attribution is included even though it is not required. The depicted dancers do not endorse Axiom Cut. See [`public/demo/neon-sync/CREDITS.md`](public/demo/neon-sync/CREDITS.md) for the exact asset record.
+Force regeneration of every proxy, poster, and comparison output with:
+
+```bash
+AXIOM_DEMO_FORCE=1 npm run demo:neon
+```
+
+All nine source clips are by [khanhhoangminh on Pexels](https://www.pexels.com/@khanhhoangminh/) and are used under the [Pexels License](https://www.pexels.com/license/). Attribution is included even though it is not required. The depicted dancers and creator do not endorse, sponsor, or represent Axiom Cut. See [`public/demo/neon-sync/CREDITS.md`](public/demo/neon-sync/CREDITS.md) for the exact asset record.
 
 ## API overview
 

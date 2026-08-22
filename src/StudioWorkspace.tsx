@@ -153,6 +153,11 @@ const mediaToAsset = (media: StudioMedia): MediaAsset => ({
   codec: media.codec,
   hasAudio: media.hasAudio,
   serverUrl: media.fileUrl,
+  thumbnailUrl: media.thumbnailUrl,
+  builtIn: media.builtIn,
+  collection: media.collection,
+  role: media.role,
+  credit: media.credit ? { ...media.credit } : undefined,
   status: 'ready',
   createdAt: media.createdAt,
 })
@@ -188,21 +193,33 @@ function StudioWorkspace({ onOpenShowcase }: { onOpenShowcase: () => void }) {
   const [saved, setSaved] = useState(true)
   const [saveFailed, setSaveFailed] = useState(false)
   const [versionsOpen, setVersionsOpen] = useState(false)
+  const [mediaOpen, setMediaOpen] = useState(false)
   const [projectName, setProjectName] = useState(project.name)
   const mediaInputRef = useRef<HTMLInputElement>(null)
   const projectInputRef = useRef<HTMLInputElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const previewRef = useRef<HTMLDivElement>(null)
   const renderAbortRef = useRef<AbortController | null>(null)
-  const restoreStartedRef = useRef(false)
   const latestProjectRef = useRef(project)
 
   const videoTracks = project.tracks.filter((track) => track.kind === 'video')
   const primaryVideoTrack = videoTracks[0]
   const videoClips = useMemo(() => primaryVideoTrack?.clips.filter((clip) => clip.enabled).sort((a, b) => a.start - b.start) ?? [], [primaryVideoTrack])
+  const sortedMedia = useMemo(() => [...project.media].sort((left, right) => {
+    const leftIsBuiltIn = left.builtIn === true
+    const rightIsBuiltIn = right.builtIn === true
+    if (leftIsBuiltIn !== rightIsBuiltIn) return leftIsBuiltIn ? -1 : 1
+    if (!leftIsBuiltIn || !rightIsBuiltIn) return 0
+    const roleOrder = { source: 0, result: 1 } as const
+    const roleDifference = roleOrder[left.role ?? 'source'] - roleOrder[right.role ?? 'source']
+    return roleDifference || left.createdAt.localeCompare(right.createdAt)
+  }), [project.media])
+  const neonSyncAssets = sortedMedia.filter((asset) => asset.builtIn && asset.collection === 'neon-sync')
+  const neonSyncSourceCount = neonSyncAssets.filter((asset) => asset.role === 'source').length
+  const neonSyncResultCount = neonSyncAssets.filter((asset) => asset.role === 'result').length
   const duration = Math.max(projectDuration(project), 1)
   const timelineDuration = Math.max(duration, 10)
-  const selectedAsset = project.media.find((asset) => asset.id === project.selection.mediaId) ?? project.media[0] ?? null
+  const selectedAsset = project.media.find((asset) => asset.id === project.selection.mediaId) ?? sortedMedia[0] ?? null
   const selectedClipEntry = project.selection.clipId ? findClip(project, project.selection.clipId) : null
   const timelineClip = videoClips.find((clip) => {
     const end = clip.start + (clip.sourceEnd - clip.sourceStart) / clip.speed
@@ -238,21 +255,19 @@ function StudioWorkspace({ onOpenShowcase }: { onOpenShowcase: () => void }) {
   }, [])
 
   useEffect(() => {
-    if (restoreStartedRef.current || project.media.length) return
-    restoreStartedRef.current = true
-    listMedia().then((items) => {
-      let cursor = 0
-      for (const media of items.slice(0, 8).reverse()) {
-        const asset = mediaToAsset(media)
-        const at = new Date().toISOString()
-        edit({ type: 'ADD_MEDIA', asset, select: true, at })
-        edit({ type: 'ADD_CLIP', trackId: 'video-main', clip: createClip(asset, { id: `clip-${asset.id}`, start: cursor }), select: true, at })
-        cursor += asset.duration
-      }
-      if (items.length) notify('success', `已恢复本地素材库中的 ${Math.min(items.length, 8)} 个视频。`)
+    const controller = new AbortController()
+    listMedia(controller.signal).then((items) => {
+      const assets = items.map(mediaToAsset)
+      const knownIds = new Set(latestProjectRef.current.media.map((asset) => asset.id))
+      const missingCount = assets.reduce((count, asset) => {
+        if (knownIds.has(asset.id)) return count
+        knownIds.add(asset.id)
+        return count + 1
+      }, 0)
+      dispatch({ type: 'SYNC_MEDIA', assets })
+      if (missingCount) setToast({ kind: 'success', message: `已同步 ${missingCount} 个素材到素材库，时间线保持不变。` })
     }).catch(() => undefined)
-  // The local media store is restored once when the editor opens.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => controller.abort()
   }, [])
 
   useEffect(() => {
@@ -280,6 +295,15 @@ function StudioWorkspace({ onOpenShowcase }: { onOpenShowcase: () => void }) {
     const timer = window.setTimeout(() => setToast(null), 3200)
     return () => window.clearTimeout(timer)
   }, [toast])
+
+  useEffect(() => {
+    if (!mediaOpen) return undefined
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMediaOpen(false)
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [mediaOpen])
 
   useEffect(() => {
     if (!playing) return
@@ -585,7 +609,12 @@ function StudioWorkspace({ onOpenShowcase }: { onOpenShowcase: () => void }) {
   }
 
   const removeSelectedAsset = async () => {
-    if (!selectedAsset || !window.confirm(`确定从本地素材库删除“${selectedAsset.name}”吗？这个操作会同时移除它的时间线片段。`)) return
+    if (!selectedAsset) return
+    if (selectedAsset.builtIn) {
+      notify('error', '这是内置演示素材，可加入时间线，但不能从素材库删除。')
+      return
+    }
+    if (!window.confirm(`确定从本地素材库删除“${selectedAsset.name}”吗？这个操作会同时移除它的时间线片段。`)) return
     try {
       await deleteMedia(selectedAsset.id)
       edit({ type: 'REMOVE_MEDIA', mediaId: selectedAsset.id, at: new Date().toISOString() })
@@ -738,7 +767,7 @@ function StudioWorkspace({ onOpenShowcase }: { onOpenShowcase: () => void }) {
       <div className="studio-toolbar">
         <div className="toolbar-group"><button className="studio-icon-button" disabled={!history.past.length} onClick={() => edit({ type: 'UNDO' })} title="撤销"><Undo2 size={18} /></button><button className="studio-icon-button" disabled={!history.future.length} onClick={() => edit({ type: 'REDO' })} title="重做"><Redo2 size={18} /></button></div>
         <span className={`save-state ${saveFailed ? 'failed' : ''}`}>{saveFailed ? <AlertCircle size={15} /> : saved ? <CheckCircle2 size={15} /> : <LoaderCircle className="spin" size={15} />} {saveFailed ? '保存失败' : saved ? '已自动保存' : '保存中'}</span>
-        <button className="studio-button mobile-import" onClick={() => mediaInputRef.current?.click()}><Upload size={17} /> 导入</button>
+        <button className="studio-button mobile-library" onClick={() => setMediaOpen(true)} title="打开素材库"><Film size={17} /> 素材库</button>
         <button className="studio-button showcase-link hide-compact" onClick={onOpenShowcase}><ImagePlay size={17} /> 展示 Demo</button>
         <button className="studio-button hide-compact" onClick={() => setVersionsOpen(true)}><History size={17} /> 版本</button>
         <button className="studio-button primary" disabled={!renderReady && !rendering} onClick={() => { setTab('export'); if (!rendering && (!renderComplete || renderStale)) void renderVideo() }}><Download size={17} /> {rendering ? '渲染中' : renderFresh ? '查看成片' : renderStale ? '重新渲染' : '导出成片'}</button>
@@ -747,25 +776,42 @@ function StudioWorkspace({ onOpenShowcase }: { onOpenShowcase: () => void }) {
 
     <input ref={mediaInputRef} hidden multiple type="file" accept="video/*,.mkv,.m4v,.ts" onChange={handleMediaInput} />
     <input ref={projectInputRef} hidden type="file" accept="application/json,.json" onChange={importProject} />
+    {mediaOpen && <button className="asset-drawer-backdrop" aria-label="关闭素材库" onClick={() => setMediaOpen(false)} />}
 
     <main className="studio-main">
-      <aside className="asset-panel">
-        <div className="panel-title-row"><div><h2>素材库</h2><span>MEDIA / LOCAL</span></div><button onClick={() => mediaInputRef.current?.click()} title="导入素材"><Plus size={19} /></button></div>
+      <aside className={`asset-panel ${mediaOpen ? 'compact-open' : ''}`}>
+        <div className="panel-title-row"><div><h2>素材库</h2><span>MEDIA / LOCAL</span></div><div className="panel-title-actions"><button onClick={() => mediaInputRef.current?.click()} title="导入素材"><Plus size={19} /></button><button className="compact-close" onClick={() => setMediaOpen(false)} title="关闭素材库"><X size={18} /></button></div></div>
         <div className={`asset-dropzone ${dragging ? 'dragging' : ''}`} onClick={() => mediaInputRef.current?.click()} onDragEnter={(event) => { event.preventDefault(); setDragging(true) }} onDragOver={(event) => event.preventDefault()} onDragLeave={() => setDragging(false)} onDrop={handleDrop} role="button" tabIndex={0}>
           <Upload size={24} /><strong>导入真实视频</strong><span>拖放或点击选择<br />MP4 · MOV · WebM · MKV</span>
           {uploadProgress !== null && <div className="upload-progress"><i style={{ width: `${uploadProgress}%` }} /></div>}
         </div>
         <div className="asset-list">
           <div className="asset-list-heading"><span>工程素材</span><span>{project.media.length} ITEMS</span></div>
-          {project.media.length ? project.media.map((asset) => <button className={`asset-card ${selectedAsset?.id === asset.id ? 'active' : ''}`} key={asset.id} onClick={() => selectAsset(asset.id)}>
-            <div className="asset-thumb">{asset.kind === 'video' && asset.serverUrl ? <video src={asset.serverUrl} muted preload="metadata" /> : asset.kind === 'audio' ? <Music2 size={21} /> : <FileVideo2 size={21} />}<span>{formatDuration(asset.duration)}</span></div>
-            <div className="asset-info"><strong>{asset.name}</strong><span>{asset.width && asset.height ? `${asset.width}×${asset.height}` : asset.kind.toUpperCase()} · {asset.fps ? `${asset.fps.toFixed(0)} FPS` : asset.codec ?? 'MEDIA'}</span><small>{formatBytes(asset.size)} · {asset.hasAudio ? '含声音' : '无声音轨'}</small></div>
+          {neonSyncAssets.length > 0 && <div className="built-in-collection-banner">
+            <div className="collection-banner-title"><span><Sparkles size={15} /> BUILT-IN</span><strong>NEON SYNC</strong></div>
+            <p>女团风完整展示素材</p>
+            <div><span>{neonSyncSourceCount} 支完整源片</span><i /> <span>{neonSyncResultCount} 支 Agent 成片</span></div>
+          </div>}
+          {sortedMedia.length ? sortedMedia.map((asset) => <button className={`asset-card ${asset.builtIn ? 'built-in' : ''} ${selectedAsset?.id === asset.id ? 'active' : ''}`} key={asset.id} onClick={() => selectAsset(asset.id)} title={asset.builtIn ? '内置演示素材，可选择后加入时间线' : asset.name}>
+            <div className="asset-thumb">
+              {asset.thumbnailUrl
+                ? <img src={asset.thumbnailUrl} alt="" loading="lazy" />
+                : asset.kind === 'video' && asset.serverUrl && !asset.builtIn
+                  ? <video src={asset.serverUrl} muted preload="metadata" />
+                  : asset.kind === 'audio' ? <Music2 size={21} /> : <FileVideo2 size={21} />}
+              {asset.builtIn && <b className={`asset-role-badge ${asset.role === 'result' ? 'result' : 'source'}`}>{asset.role === 'result' ? 'RESULT' : 'SOURCE'}</b>}
+              <span className="asset-duration">{formatDuration(asset.duration)}</span>
+            </div>
+            <div className="asset-info"><strong>{asset.name}</strong><span>{asset.width && asset.height ? `${asset.width}×${asset.height}` : asset.kind.toUpperCase()} · {asset.fps ? `${asset.fps.toFixed(0)} FPS` : asset.codec ?? 'MEDIA'}</span><small>{asset.builtIn ? `内置演示 · ${asset.credit?.creator ?? 'NEON SYNC'}` : `${formatBytes(asset.size)} · ${asset.hasAudio ? '含声音' : '无声音轨'}`}</small></div>
           </button>) : <div className="asset-empty">还没有素材。导入视频后会自动读取时长、分辨率、帧率和声音信息。</div>}
         </div>
         <div className="analysis-card">
           <header><strong><ScanSearch size={16} /> 媒体检查</strong><span>{activeAnalysis ? 'READY' : 'FFMPEG'}</span></header>
           <p>{activeAnalysis ? `${activeAnalysis.shots.length} 个镜头 · ${activeAnalysis.silences.length} 个静音段 · ${activeAnalysis.suggestedCuts.length} 个建议切点` : '检测镜头变化与静音区间，为 Agent 提供可验证的剪辑依据。'}</p>
-          {selectedAsset && <div className="analysis-actions"><button className="studio-button accent" disabled={analyzingId === selectedAsset.id} onClick={() => void runAnalysis()}>{analyzingId === selectedAsset.id ? <LoaderCircle className="spin" size={16} /> : <BarChart3 size={16} />} {activeAnalysis ? '重新分析' : '分析当前素材'}</button><button className="studio-icon-button" onClick={addSelectedAssetToTimeline} title="加入时间线"><Plus size={16} /></button><button className="studio-icon-button" onClick={() => void removeSelectedAsset()} title="删除素材"><Trash2 size={16} /></button></div>}
+          {selectedAsset && <>
+            <div className="analysis-actions"><button className="studio-button accent" disabled={analyzingId === selectedAsset.id} onClick={() => void runAnalysis()}>{analyzingId === selectedAsset.id ? <LoaderCircle className="spin" size={16} /> : <BarChart3 size={16} />} {activeAnalysis ? '重新分析' : '分析当前素材'}</button><button className="studio-icon-button" onClick={addSelectedAssetToTimeline} title="加入时间线"><Plus size={16} /></button><button className="studio-icon-button" disabled={selectedAsset.builtIn} onClick={() => void removeSelectedAsset()} title={selectedAsset.builtIn ? '内置演示素材不可删除' : '删除素材'}><Trash2 size={16} /></button></div>
+            {selectedAsset.builtIn && <div className="built-in-media-note"><strong><Sparkles size={13} /> 内置演示 · 不可删除</strong>{selectedAsset.credit && <span>{selectedAsset.credit.creator} · <a href={selectedAsset.credit.sourceUrl} target="_blank" rel="noreferrer">素材来源</a> · <a href={selectedAsset.credit.licenseUrl} target="_blank" rel="noreferrer">授权说明</a></span>}</div>}
+          </>}
         </div>
       </aside>
 

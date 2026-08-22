@@ -2,6 +2,12 @@ export type MediaKind = 'video' | 'audio' | 'image'
 export type TrackKind = 'video' | 'audio' | 'caption'
 export type AspectRatio = '16:9' | '9:16' | '1:1' | '4:5' | '4:3'
 
+export interface MediaCredit {
+  creator: string
+  sourceUrl: string
+  licenseUrl: string
+}
+
 export interface MediaAsset {
   id: string
   name: string
@@ -17,6 +23,10 @@ export interface MediaAsset {
   /** A durable server route such as /api/media/:id/file. blob: URLs are discarded on save. */
   serverUrl?: string
   thumbnailUrl?: string
+  builtIn?: boolean
+  collection?: string
+  role?: 'source' | 'result'
+  credit?: MediaCredit
   status: 'uploading' | 'ready' | 'error'
   createdAt: string
   error?: string
@@ -205,6 +215,7 @@ type ActionTime = { at?: string }
 export type ProjectAction =
   | ({ type: 'RENAME_PROJECT'; name: string } & ActionTime)
   | ({ type: 'ADD_MEDIA'; asset: MediaAsset; select?: boolean } & ActionTime)
+  | ({ type: 'SYNC_MEDIA'; assets: MediaAsset[] } & ActionTime)
   | ({ type: 'UPDATE_MEDIA'; mediaId: string; patch: Partial<Omit<MediaAsset, 'id'>> } & ActionTime)
   | ({ type: 'REMOVE_MEDIA'; mediaId: string } & ActionTime)
   | ({ type: 'SELECT'; selection: Partial<ProjectSelection> } & ActionTime)
@@ -342,6 +353,16 @@ export const projectReducer = (project: Project, action: ProjectAction): Project
         selection: action.select ? { ...project.selection, mediaId: action.asset.id } : project.selection,
         ...stamp(project, action.at),
       }
+    }
+    case 'SYNC_MEDIA': {
+      const knownIds = new Set(project.media.map((asset) => asset.id))
+      const missing = action.assets.filter((asset) => {
+        if (knownIds.has(asset.id)) return false
+        knownIds.add(asset.id)
+        return true
+      })
+      if (!missing.length) return project
+      return { ...project, media: [...project.media, ...missing.map((asset) => ({ ...asset }))] }
     }
     case 'UPDATE_MEDIA': {
       if (!project.media.some((asset) => asset.id === action.mediaId)) return project
@@ -554,7 +575,7 @@ export const createProjectHistory = (project = createDefaultProject(), limit = 5
 
 export const createHistory = createProjectHistory
 
-const TRANSIENT_ACTIONS = new Set<ProjectAction['type']>(['SELECT', 'SET_PLAYHEAD'])
+const TRANSIENT_ACTIONS = new Set<ProjectAction['type']>(['SELECT', 'SET_PLAYHEAD', 'SYNC_MEDIA'])
 
 export const projectHistoryReducer = (history: ProjectHistory, action: HistoryAction): ProjectHistory => {
   if (action.type === 'UNDO') {
@@ -616,6 +637,19 @@ const parseAsset = (value: unknown): MediaAsset | null => {
     hasAudio: value.hasAudio === undefined ? undefined : booleanValue(value.hasAudio),
     serverUrl: safeUrl(value.serverUrl),
     thumbnailUrl: safeUrl(value.thumbnailUrl),
+    builtIn: value.builtIn === undefined ? undefined : booleanValue(value.builtIn),
+    collection: value.collection === undefined ? undefined : stringValue(value.collection).slice(0, 160),
+    role: value.role === 'source' || value.role === 'result' ? value.role : undefined,
+    credit: isRecord(value.credit)
+      && stringValue(value.credit.creator)
+      && safeUrl(value.credit.sourceUrl)
+      && safeUrl(value.credit.licenseUrl)
+      ? {
+          creator: stringValue(value.credit.creator).slice(0, 300),
+          sourceUrl: safeUrl(value.credit.sourceUrl) as string,
+          licenseUrl: safeUrl(value.credit.licenseUrl) as string,
+        }
+      : undefined,
     status,
     createdAt: stringValue(value.createdAt, new Date(0).toISOString()),
     error: value.error === undefined ? undefined : stringValue(value.error).slice(0, 500),

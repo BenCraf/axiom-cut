@@ -19,6 +19,19 @@ const expect = (condition, message) => {
   if (!condition) throw new Error(message)
 }
 
+const builtInIds = [
+  'd7a5e3b1-4c20-4f8a-9b01-6e1010000081',
+  'd7a5e3b1-4c20-4f8a-9b01-6e1010000082',
+  'd7a5e3b1-4c20-4f8a-9b01-6e1010000083',
+  'd7a5e3b1-4c20-4f8a-9b01-6e1010000004',
+  'd7a5e3b1-4c20-4f8a-9b01-6e1010000002',
+  'd7a5e3b1-4c20-4f8a-9b01-6e1010000086',
+  'd7a5e3b1-4c20-4f8a-9b01-6e1010000087',
+  'd7a5e3b1-4c20-4f8a-9b01-6e1010000001',
+  'd7a5e3b1-4c20-4f8a-9b01-6e1010000089',
+  'd7a5e3b1-4c20-4f8a-9b01-6e1010000003',
+]
+
 const requestJson = async (url, options) => {
   const response = await fetch(url, options)
   const payload = await response.json()
@@ -53,6 +66,19 @@ try {
   const status = await requestJson(`${base}/api/status`)
   expect(status.renderer.formats.includes('4:3') && status.renderer.formats.includes('4:5'), 'Renderer status omits supported social formats')
 
+  const mediaLibrary = (await requestJson(`${base}/api/media`)).media
+  const builtInMedia = mediaLibrary.filter((media) => media.collection === 'neon-sync')
+  expect(builtInMedia.length === 10, `Expected 10 NEON SYNC assets, received ${builtInMedia.length}`)
+  expect(builtInIds.every((id) => builtInMedia.some((media) => media.id === id)), 'NEON SYNC fixed IDs are incomplete')
+  expect(builtInMedia.every((media) => media.builtIn === true && ['source', 'result'].includes(media.role)), 'Built-in media flags are incomplete')
+  expect(builtInMedia.filter((media) => media.role === 'source').length === 9, 'NEON SYNC source/result roles are wrong')
+  expect(builtInMedia.every((media) => media.thumbnailUrl && media.credit?.creator && media.credit?.sourceUrl && media.credit?.licenseUrl), 'Built-in media attribution is incomplete')
+  expect(builtInMedia.every((media) => media.analysis === null), 'Built-in media was analyzed automatically')
+
+  const protectedDelete = await fetch(`${base}/api/media/${builtInIds[0]}`, { method: 'DELETE' })
+  const protectedDeletePayload = await protectedDelete.json()
+  expect(protectedDelete.status === 403 && protectedDeletePayload.code === 'BUILT_IN_MEDIA', 'Built-in media deletion was not protected')
+
   const upload = async (path, name) => requestJson(`${base}/api/media`, {
     method: 'POST',
     headers: { 'content-type': 'video/mp4', 'x-file-type': 'video/mp4', 'x-file-name': encodeURIComponent(name) },
@@ -61,6 +87,7 @@ try {
   const first = (await upload(firstPath, 'first.mp4')).media
   const second = (await upload(secondPath, 'second.mp4')).media
   expect(first.hasAudio && !second.hasAudio, 'Audio probing did not match fixtures')
+  expect(!('builtIn' in first) && !('collection' in first), 'Uploaded media unexpectedly received built-in fields')
 
   const analysis = (await requestJson(`${base}/api/media/${first.id}/analyze`, { method: 'POST' })).analysis
   expect(Array.isArray(analysis.shots) && Array.isArray(analysis.silences), 'Analysis response is incomplete')

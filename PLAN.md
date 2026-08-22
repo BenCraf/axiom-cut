@@ -24,6 +24,9 @@
 - [x] Automated real-render smoke test and FFprobe verification
 - [x] Two polished code-only presentation films
 - [x] Licensed real-footage performance demo with synchronized before/after comparison
+- [x] Built-in NEON SYNC library with nine full-duration 720p source proxies: four neon indoor and five rooftop
+- [x] One clearly labeled Agent result alongside the source proxies, with no automatic timeline insertion
+- [x] Complete nine-source Pexels attribution, license, and non-endorsement record
 - [x] Reproducible FFmpeg demo-asset build with embedded attribution and non-endorsement metadata
 - [x] DeepSeek key kept server-side
 - [x] GitHub-ready MIT open-source repository

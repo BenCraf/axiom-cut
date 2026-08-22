@@ -1,7 +1,7 @@
 import express from 'express'
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, readdir, stat, unlink, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, extname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -22,6 +22,99 @@ const subtitleDir = join(studioDir, 'subtitles')
 const MAX_UPLOAD_BYTES = 500 * 1024 * 1024
 const MEDIA_EXTENSIONS = new Set(['.mp4', '.mov', '.m4v', '.webm', '.mkv', '.avi', '.mpeg', '.mpg', '.ts'])
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const PEXELS_LICENSE_URL = 'https://www.pexels.com/license/'
+const BUILT_IN_MEDIA = [
+  {
+    id: 'd7a5e3b1-4c20-4f8a-9b01-6e1010000081',
+    input: 'public/demo/neon-sync/library/source-13648581.mp4',
+    name: 'NEON SYNC · 露台全景 A.mp4',
+    role: 'source',
+    thumbnailUrl: '/demo/neon-sync/library/source-13648581-poster.webp',
+    createdAt: '2026-08-22T02:00:01.000Z',
+    sourceUrl: 'https://www.pexels.com/video/women-practising-synchronic-dance-13648581/',
+  },
+  {
+    id: 'd7a5e3b1-4c20-4f8a-9b01-6e1010000082',
+    input: 'public/demo/neon-sync/library/source-13648582.mp4',
+    name: 'NEON SYNC · 霓虹人物特写.mp4',
+    role: 'source',
+    thumbnailUrl: '/demo/neon-sync/library/source-13648582-poster.webp',
+    createdAt: '2026-08-22T02:00:02.000Z',
+    sourceUrl: 'https://www.pexels.com/video/x-13648582/',
+  },
+  {
+    id: 'd7a5e3b1-4c20-4f8a-9b01-6e1010000083',
+    input: 'public/demo/neon-sync/library/source-13648583.mp4',
+    name: 'NEON SYNC · 露台人物特写.mp4',
+    role: 'source',
+    thumbnailUrl: '/demo/neon-sync/library/source-13648583-poster.webp',
+    createdAt: '2026-08-22T02:00:03.000Z',
+    sourceUrl: 'https://www.pexels.com/video/group-of-young-women-dancing-13648583/',
+  },
+  {
+    id: 'd7a5e3b1-4c20-4f8a-9b01-6e1010000004',
+    input: 'public/demo/neon-sync/library/alternate-source.mp4',
+    name: 'NEON SYNC · 霓虹舞蹈机位 B.mp4',
+    role: 'source',
+    thumbnailUrl: '/demo/neon-sync/library/alternate-source-poster.webp',
+    createdAt: '2026-08-22T02:00:04.000Z',
+    sourceUrl: 'https://www.pexels.com/video/performance-with-synchronic-dancing-13648584/',
+  },
+  {
+    id: 'd7a5e3b1-4c20-4f8a-9b01-6e1010000002',
+    input: 'public/demo/neon-sync/library/close-source.mp4',
+    name: 'NEON SYNC · 霓虹舞蹈机位 A.mp4',
+    role: 'source',
+    thumbnailUrl: '/demo/neon-sync/library/close-source-poster.webp',
+    createdAt: '2026-08-22T02:00:05.000Z',
+    sourceUrl: 'https://www.pexels.com/video/dancers-practising-dance-routine-13648585/',
+  },
+  {
+    id: 'd7a5e3b1-4c20-4f8a-9b01-6e1010000086',
+    input: 'public/demo/neon-sync/library/source-13648586.mp4',
+    name: 'NEON SYNC · 露台全景 B.mp4',
+    role: 'source',
+    thumbnailUrl: '/demo/neon-sync/library/source-13648586-poster.webp',
+    createdAt: '2026-08-22T02:00:06.000Z',
+    sourceUrl: 'https://www.pexels.com/video/x-13648586/',
+  },
+  {
+    id: 'd7a5e3b1-4c20-4f8a-9b01-6e1010000087',
+    input: 'public/demo/neon-sync/library/source-13648587.mp4',
+    name: 'NEON SYNC · 露台双人机位.mp4',
+    role: 'source',
+    thumbnailUrl: '/demo/neon-sync/library/source-13648587-poster.webp',
+    createdAt: '2026-08-22T02:00:07.000Z',
+    sourceUrl: 'https://www.pexels.com/video/x-13648587/',
+  },
+  {
+    id: 'd7a5e3b1-4c20-4f8a-9b01-6e1010000001',
+    input: 'public/demo/neon-sync/library/wide-source.mp4',
+    name: 'NEON SYNC · 霓虹舞蹈主机位.mp4',
+    role: 'source',
+    thumbnailUrl: '/demo/neon-sync/library/wide-source-poster.webp',
+    createdAt: '2026-08-22T02:00:08.000Z',
+    sourceUrl: 'https://www.pexels.com/video/women-dancing-in-studio-13648588/',
+  },
+  {
+    id: 'd7a5e3b1-4c20-4f8a-9b01-6e1010000089',
+    input: 'public/demo/neon-sync/library/source-13648589.mp4',
+    name: 'NEON SYNC · 露台全景 C.mp4',
+    role: 'source',
+    thumbnailUrl: '/demo/neon-sync/library/source-13648589-poster.webp',
+    createdAt: '2026-08-22T02:00:09.000Z',
+    sourceUrl: 'https://www.pexels.com/video/dancers-in-black-costumes-13648589/',
+  },
+  {
+    id: 'd7a5e3b1-4c20-4f8a-9b01-6e1010000003',
+    input: 'public/demo/neon-sync/agent-cut.mp4',
+    name: 'NEON SYNC · Agent 精剪成片.mp4',
+    role: 'result',
+    thumbnailUrl: '/demo/neon-sync/cut-poster.webp',
+    createdAt: '2026-08-22T02:00:10.000Z',
+    sourceUrl: 'https://www.pexels.com/video/women-dancing-in-studio-13648588/',
+  },
+]
 const mediaCache = new Map()
 const renderJobs = new Map()
 const renderQueue = []
@@ -88,6 +181,13 @@ const publicMedia = (metadata) => ({
   url: `/api/media/${metadata.id}/file`,
   fileUrl: `/api/media/${metadata.id}/file`,
   analysisUrl: `/api/media/${metadata.id}/analyze`,
+  ...(metadata.builtIn === true ? {
+    builtIn: true,
+    collection: metadata.collection,
+    role: metadata.role,
+    thumbnailUrl: metadata.thumbnailUrl,
+    credit: metadata.credit,
+  } : {}),
 })
 
 const readMedia = async (idValue) => {
@@ -182,6 +282,92 @@ const probeMedia = async (filePath) => {
     hasAudio: Boolean(audio),
   }
 }
+
+const installMediaFileAtomically = async (sourcePath, destinationPath) => {
+  const temporaryPath = `${destinationPath}.${process.pid}-${randomUUID()}.tmp`
+  try {
+    await copyFile(sourcePath, temporaryPath)
+    const [fileStat, probe] = await Promise.all([
+      stat(temporaryPath),
+      probeMedia(temporaryPath),
+    ])
+    await rename(temporaryPath, destinationPath)
+    return { fileStat, probe }
+  } finally {
+    await unlink(temporaryPath).catch(() => {})
+  }
+}
+
+const writeJsonAtomically = async (destinationPath, value) => {
+  const temporaryPath = `${destinationPath}.${process.pid}-${randomUUID()}.tmp`
+  try {
+    await writeFile(temporaryPath, JSON.stringify(value, null, 2), { encoding: 'utf8', flag: 'wx' })
+    await rename(temporaryPath, destinationPath)
+  } finally {
+    await unlink(temporaryPath).catch(() => {})
+  }
+}
+
+const seedBuiltInMedia = async () => {
+  for (const item of BUILT_IN_MEDIA) {
+    const inputPath = resolve(root, item.input)
+    const destinationPath = join(mediaDir, `${item.id}.mp4`)
+    try {
+      const inputStat = await stat(inputPath)
+      let fileStat
+      let probe
+      try {
+        const [installedStat, storedMetadata] = await Promise.all([
+          stat(destinationPath),
+          readFile(mediaMetaPath(item.id), 'utf8').then(JSON.parse),
+        ])
+        const reusable = installedStat.size === inputStat.size
+          && storedMetadata.id === item.id
+          && storedMetadata.extension === '.mp4'
+          && Number(storedMetadata.duration) > 0
+          && Number(storedMetadata.width) > 0
+          && Number(storedMetadata.height) > 0
+        if (!reusable) throw new Error('Built-in media cache is stale')
+        fileStat = installedStat
+        probe = {
+          duration: storedMetadata.duration,
+          width: storedMetadata.width,
+          height: storedMetadata.height,
+          fps: storedMetadata.fps,
+          codec: storedMetadata.codec,
+          audioCodec: storedMetadata.audioCodec ?? null,
+          hasAudio: storedMetadata.hasAudio === true,
+        }
+      } catch {
+        ({ fileStat, probe } = await installMediaFileAtomically(inputPath, destinationPath))
+      }
+      const metadata = {
+        id: item.id,
+        extension: '.mp4',
+        name: item.name,
+        type: 'video/mp4',
+        size: fileStat.size,
+        createdAt: item.createdAt,
+        ...probe,
+        builtIn: true,
+        collection: 'neon-sync',
+        role: item.role,
+        thumbnailUrl: item.thumbnailUrl,
+        credit: {
+          creator: 'khanhhoangminh / Pexels',
+          sourceUrl: item.sourceUrl,
+          licenseUrl: PEXELS_LICENSE_URL,
+        },
+      }
+      await writeJsonAtomically(mediaMetaPath(item.id), metadata)
+      mediaCache.set(item.id, metadata)
+    } catch (error) {
+      console.warn(`Built-in media skipped (${item.name}):`, error?.message)
+    }
+  }
+}
+
+await seedBuiltInMedia()
 
 const roundTime = (value) => Number(Math.max(0, value).toFixed(3))
 
@@ -791,6 +977,9 @@ app.post('/api/media/:id/analyze', async (request, response) => {
 
 app.delete('/api/media/:id', async (request, response) => {
   const metadata = await readMedia(request.params.id)
+  if (metadata.builtIn === true) {
+    return apiError(response, 403, 'BUILT_IN_MEDIA', '这是演示素材，不能从素材库中删除。')
+  }
   const isRendering = [...renderJobs.values()].some((job) =>
     (job.status === 'queued' || job.status === 'rendering') && job.request.clips.some((clip) => clip.mediaId === metadata.id),
   )
