@@ -2,13 +2,15 @@
 
 A code-directed video editing Agent. Upload a real video or start from a built-in scene, describe the edit in natural language, then inspect the exact SVG, CSS and frame-based operations used to create the result.
 
-![Axiom Cut UI](docs/preview.png)
+![Code-generated derivative film](docs/preview.png)
+
+![Code-generated product film](docs/product-preview.png)
 
 ## Why this project
 
 The assignment asks for basic editing, a usable human-in-the-loop interface, and an Agent that can perform editing work. Axiom Cut makes the result inspectable: the model proposes a structured plan and parameters, while deterministic React/SVG/video layers produce the pixels. The user can always compare the original with the code-enhanced version.
 
-Version 0.3 expands the studio beyond mathematics. It includes local video upload and preview, four toggleable code operations, original/enhanced comparison, a deterministic code timeline, visible `scene.tsx`, a product-launch demo, a new derivative animation demo, DeepSeek planning, and reproducible project export. A production Remotion/FFmpeg worker is the next implementation layer.
+Version 0.4 is presentation-first. The default canvas is substantially larger, all UI copy has a readable 11px minimum, comparison uses a full-size wipe instead of two miniature canvases, and one click opens a clean full-screen film mode. Both built-in films run from typed scene specs that are also shown in the code drawer; no generated image is used.
 
 ## Run locally
 
@@ -37,16 +39,16 @@ The browser calls `/api/plan` and `/api/evolve`; the key is never sent to the cl
 
 ## Two comparison demos
 
-Choose either card in the left media panel:
+Choose either project in the top bar:
 
-- **Product launch** — a general-purpose edit built from typography, layout and motion code.
-- **Derivative / local linearity** — a 3b1b-inspired but original SVG scene with a frame-driven curve, tangent, delta guides and formula.
+- **Derivative / local linearity** — an 18-second, four-chapter story: a code-drawn car asks the instantaneous-speed question, then a curve, secant, shrinking difference and tangent assemble from one exact Bézier function.
+- **Flux Note product launch** — a 12-second brand film with staged typography, product UI cards, feature timing and CTA motion.
 
-Use **Original / Compare / Code Edit** above the preview to inspect the change. Open `scene.tsx` below it to see the deterministic scene definition.
+Use **基础版 / 前后对比 / 代码成片** above the preview. Comparison keeps both versions at the full 16:9 size and reveals the enhanced version through a wipe. Click **查看场景代码** to inspect the same typed scene spec used by the renderer, or **演示播放** for a clean 1280×720 presentation view.
 
 ## Upload a video
 
-Click **上传本地视频** and choose an MP4, MOV or WebM file. The browser creates a local Object URL: the video itself is not sent to DeepSeek. Toggle auto captions, smart crop, parameterized color and motion graphics, then describe the desired edit in the Director panel. DeepSeek receives only the written brief; the current demo overlays code-driven layers on the local video.
+Click **上传视频** and choose an MP4, MOV or WebM file. The browser creates a local Object URL: the video itself is not sent to DeepSeek. Toggle auto captions, smart crop, parameterized color and motion graphics, then describe the desired edit in the Director panel. DeepSeek receives only the written brief; the current demo overlays code-driven layers on the local video.
 
 See [docs/EVOLUTION.md](docs/EVOLUTION.md) for the data contract and safety boundaries.
 
@@ -65,13 +67,14 @@ Original/enhanced comparison → reproducible project JSON
 ## Roadmap
 
 - [x] General video-editing studio and local upload preview
-- [x] Original/code-enhanced side-by-side comparison
+- [x] Full-size original/code-enhanced wipe comparison
+- [x] One-click full-screen presentation mode
 - [x] Product-launch and mathematical comparison demos
-- [x] Deterministic React/SVG scene code and code timeline
+- [x] Typed scene specs used as the visible source of truth
+- [x] Four-stage, frame-driven mathematical narrative
 - [x] Visible Agent plan, pipeline, and current step
 - [x] DeepSeek structured planning and evolution APIs
 - [x] Demo mode without credentials
-- [x] Visual critic, mutation selection, version history, and project memory
 - [x] Static-file demo and reproducible project JSON export
 - [ ] Remotion composition generation
 - [ ] Media metadata, speech transcription and shot detection
