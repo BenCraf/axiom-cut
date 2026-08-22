@@ -790,7 +790,7 @@ function StudioWorkspace({ onOpenShowcase }: { onOpenShowcase: () => void }) {
           {neonSyncAssets.length > 0 && <div className="built-in-collection-banner">
             <div className="collection-banner-title"><span><Sparkles size={15} /> BUILT-IN</span><strong>NEON SYNC</strong></div>
             <p>女团风完整展示素材</p>
-            <div><span>{neonSyncSourceCount} 支完整源片</span><i /> <span>{neonSyncResultCount} 支 Agent 成片</span></div>
+            <div className="collection-stats"><span>{neonSyncSourceCount} 支完整源片</span><i /> <span>{neonSyncResultCount} 支 Agent 成片</span></div>
           </div>}
           {sortedMedia.length ? sortedMedia.map((asset) => <button className={`asset-card ${asset.builtIn ? 'built-in' : ''} ${selectedAsset?.id === asset.id ? 'active' : ''}`} key={asset.id} onClick={() => selectAsset(asset.id)} title={asset.builtIn ? '内置演示素材，可选择后加入时间线' : asset.name}>
             <div className="asset-thumb">
