@@ -9,7 +9,7 @@ Axiom Cut evolves the **editing plan and scene parameters**, not the underlying 
 3. **Mutate** — generate exactly three concrete editing variants.
 4. **Select** — choose one candidate and record the expected gain and rationale.
 5. **Apply** — update the scene plan and visual parameters.
-6. **Remember** — persist reusable project-level preferences for the next round.
+6. **Remember** — persist reusable project-level preferences for the next round and save the pre-evolution project snapshot.
 
 The UI exposes each phase instead of presenting an unexplained “AI improved it” result.
 
@@ -41,4 +41,4 @@ The response contains:
 - Every applied mutation is represented in the response.
 - Scores are directional heuristics for the demo, not objective artistic truth.
 - The local fallback uses deterministic gains with diminishing returns.
-- Real rendering remains a separate, explicit tool step.
+- Applying an evolved winner updates only reversible project parameters. Real FFmpeg rendering remains a separate, explicit user action with progress and cancellation.

@@ -1,5 +1,9 @@
 import express from 'express'
-import { resolve } from 'node:path'
+import { spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
+import { mkdir, readFile, readdir, stat, unlink, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { basename, extname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('.', import.meta.url))
@@ -11,14 +15,855 @@ try {
 const app = express()
 const port = Number(process.env.PORT || 4173)
 
-app.use(express.json({ limit: '64kb' }))
+const studioDir = join(tmpdir(), 'axiom-cut-studio')
+const mediaDir = join(studioDir, 'media')
+const renderDir = join(studioDir, 'renders')
+const subtitleDir = join(studioDir, 'subtitles')
+const MAX_UPLOAD_BYTES = 500 * 1024 * 1024
+const MEDIA_EXTENSIONS = new Set(['.mp4', '.mov', '.m4v', '.webm', '.mkv', '.avi', '.mpeg', '.mpg', '.ts'])
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const mediaCache = new Map()
+const renderJobs = new Map()
+const renderQueue = []
+let activeRenders = 0
+
+await Promise.all([
+  mkdir(mediaDir, { recursive: true }),
+  mkdir(renderDir, { recursive: true }),
+  mkdir(subtitleDir, { recursive: true }),
+])
+
+class ApiError extends Error {
+  constructor(status, code, message) {
+    super(message)
+    this.status = status
+    this.code = code
+  }
+}
+
+const apiError = (response, status, code, message) => response.status(status).json({ error: message, code })
+
+const safeId = (value) => {
+  const id = String(value || '')
+  if (!UUID_PATTERN.test(id)) throw new ApiError(400, 'INVALID_ID', '资源 ID 格式无效。')
+  return id
+}
+
+const decodeFileName = (value) => {
+  const raw = Array.isArray(value) ? value[0] : value
+  if (!raw) return 'untitled.mp4'
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    return raw
+  }
+}
+
+const safeFileName = (value) => {
+  const cleaned = basename(String(value || 'untitled.mp4'))
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .replace(/[\\/:*?"<>|]/g, '_')
+    .trim()
+    .slice(0, 120)
+  return cleaned || 'untitled.mp4'
+}
+
+const mediaMetaPath = (id) => join(mediaDir, `${id}.json`)
+const mediaSourcePath = (metadata) => join(mediaDir, `${metadata.id}${metadata.extension}`)
+
+const publicMedia = (metadata) => ({
+  id: metadata.id,
+  name: metadata.name,
+  type: metadata.type,
+  size: metadata.size,
+  duration: metadata.duration,
+  width: metadata.width,
+  height: metadata.height,
+  fps: metadata.fps,
+  codec: metadata.codec,
+  audioCodec: metadata.audioCodec,
+  hasAudio: metadata.hasAudio,
+  createdAt: metadata.createdAt,
+  analysis: metadata.analysis || null,
+  url: `/api/media/${metadata.id}/file`,
+  fileUrl: `/api/media/${metadata.id}/file`,
+  analysisUrl: `/api/media/${metadata.id}/analyze`,
+})
+
+const readMedia = async (idValue) => {
+  const id = safeId(idValue)
+  if (mediaCache.has(id)) return mediaCache.get(id)
+  try {
+    const parsed = JSON.parse(await readFile(mediaMetaPath(id), 'utf8'))
+    if (parsed.id !== id || !MEDIA_EXTENSIONS.has(parsed.extension)) throw new Error('Invalid media metadata')
+    await stat(mediaSourcePath(parsed))
+    mediaCache.set(id, parsed)
+    return parsed
+  } catch (error) {
+    if (error?.code === 'ENOENT') throw new ApiError(404, 'MEDIA_NOT_FOUND', '没有找到这个素材。')
+    if (error instanceof ApiError) throw error
+    throw new ApiError(500, 'MEDIA_METADATA_ERROR', '素材元数据无法读取。')
+  }
+}
+
+const collectProcess = (command, args, { timeoutMs = 90_000, maxOutput = 4_000_000 } = {}) => new Promise((resolveProcess, rejectProcess) => {
+  const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+  let stdout = ''
+  let stderr = ''
+  let settled = false
+  const append = (current, chunk) => current.length >= maxOutput ? current : `${current}${chunk}`.slice(-maxOutput)
+  child.stdout.on('data', (chunk) => { stdout = append(stdout, chunk.toString()) })
+  child.stderr.on('data', (chunk) => { stderr = append(stderr, chunk.toString()) })
+  const timer = setTimeout(() => {
+    if (!settled) child.kill('SIGTERM')
+  }, timeoutMs)
+  child.once('error', (error) => {
+    if (settled) return
+    settled = true
+    clearTimeout(timer)
+    rejectProcess(error)
+  })
+  child.once('close', (code, signal) => {
+    if (settled) return
+    settled = true
+    clearTimeout(timer)
+    if (code === 0) return resolveProcess({ stdout, stderr })
+    const detail = stderr.trim().split('\n').slice(-8).join('\n')
+    rejectProcess(new Error(`${command} exited with ${code ?? signal}: ${detail}`))
+  })
+})
+
+const rendererHealth = await (async () => {
+  try {
+    const [ffmpeg, ffprobe] = await Promise.all([
+      collectProcess('ffmpeg', ['-version'], { timeoutMs: 10_000, maxOutput: 20_000 }),
+      collectProcess('ffprobe', ['-version'], { timeoutMs: 10_000, maxOutput: 20_000 }),
+    ])
+    const ffmpegVersion = ffmpeg.stdout.match(/^ffmpeg version\s+([^\s]+)/m)?.[1] || 'available'
+    const ffprobeReady = /^ffprobe version/m.test(ffprobe.stdout)
+    return { available: ffprobeReady, ready: ffprobeReady, version: `FFmpeg ${ffmpegVersion} · H.264/AAC` }
+  } catch (error) {
+    console.warn('FFmpeg/FFprobe unavailable:', error?.message)
+    return { available: false, ready: false, version: 'FFmpeg or FFprobe not found' }
+  }
+})()
+
+const requireRenderer = () => {
+  if (!rendererHealth.ready) throw new ApiError(503, 'RENDERER_UNAVAILABLE', 'FFmpeg 或 FFprobe 不可用，请先安装并加入 PATH。')
+}
+
+const parseRate = (value) => {
+  const [numerator, denominator = '1'] = String(value || '0').split('/')
+  const result = Number(numerator) / Number(denominator)
+  return Number.isFinite(result) ? Number(result.toFixed(3)) : 0
+}
+
+const probeMedia = async (filePath) => {
+  const { stdout } = await collectProcess('ffprobe', [
+    '-v', 'error',
+    '-show_streams',
+    '-show_format',
+    '-of', 'json',
+    filePath,
+  ], { timeoutMs: 45_000 })
+  const result = JSON.parse(stdout)
+  const video = result.streams?.find((stream) => stream.codec_type === 'video')
+  const audio = result.streams?.find((stream) => stream.codec_type === 'audio')
+  if (!video) throw new ApiError(415, 'VIDEO_STREAM_REQUIRED', '素材中没有可用的视频轨道。')
+  const duration = Number(result.format?.duration || video.duration)
+  if (!Number.isFinite(duration) || duration <= 0) throw new ApiError(415, 'INVALID_DURATION', '无法识别素材时长。')
+  return {
+    duration: Number(duration.toFixed(3)),
+    width: Number(video.width) || 0,
+    height: Number(video.height) || 0,
+    fps: parseRate(video.avg_frame_rate || video.r_frame_rate),
+    codec: String(video.codec_name || 'unknown'),
+    audioCodec: audio ? String(audio.codec_name || 'unknown') : null,
+    hasAudio: Boolean(audio),
+  }
+}
+
+const roundTime = (value) => Number(Math.max(0, value).toFixed(3))
+
+const analyzeMedia = async (metadata) => {
+  const sourcePath = mediaSourcePath(metadata)
+  const analyzedDuration = Math.min(metadata.duration, 600)
+  const sceneArgs = [
+    '-hide_banner', '-nostats', '-loglevel', 'info',
+    '-t', String(analyzedDuration), '-i', sourcePath,
+    '-vf', "select='gt(scene,0.32)',showinfo",
+    '-an', '-fps_mode', 'vfr', '-f', 'null', '-',
+  ]
+  const silenceArgs = [
+    '-hide_banner', '-nostats', '-loglevel', 'info',
+    '-t', String(analyzedDuration), '-i', sourcePath,
+    '-vn', '-af', 'silencedetect=n=-35dB:d=0.45',
+    '-f', 'null', '-',
+  ]
+  const [sceneResult, silenceResult] = await Promise.all([
+    collectProcess('ffmpeg', sceneArgs, { timeoutMs: 120_000 }),
+    metadata.hasAudio
+      ? collectProcess('ffmpeg', silenceArgs, { timeoutMs: 120_000 })
+      : Promise.resolve({ stderr: '' }),
+  ])
+
+  const sceneTimes = [...sceneResult.stderr.matchAll(/pts_time:\s*([0-9.]+)/g)]
+    .map((match) => Number(match[1]))
+    .filter((time) => Number.isFinite(time) && time > 0.08 && time < analyzedDuration - 0.08)
+  const uniqueScenes = [...new Set(sceneTimes.map((time) => roundTime(time)))]
+    .sort((a, b) => a - b)
+    .filter((time, index, values) => index === 0 || time - values[index - 1] >= 0.18)
+    .slice(0, 300)
+  const boundaries = [0, ...uniqueScenes, roundTime(analyzedDuration)]
+  const shots = boundaries.slice(0, -1).map((start, index) => ({
+    start: roundTime(start),
+    end: roundTime(boundaries[index + 1]),
+    duration: roundTime(boundaries[index + 1] - start),
+  }))
+
+  const silenceStarts = [...silenceResult.stderr.matchAll(/silence_start:\s*([0-9.]+)/g)].map((match) => Number(match[1]))
+  const silenceEnds = [...silenceResult.stderr.matchAll(/silence_end:\s*([0-9.]+)\s*\|\s*silence_duration:\s*([0-9.]+)/g)]
+    .map((match) => ({ end: Number(match[1]), duration: Number(match[2]) }))
+  const silences = silenceEnds.map((item, index) => {
+    const start = Number.isFinite(silenceStarts[index]) ? silenceStarts[index] : Math.max(0, item.end - item.duration)
+    return { start: roundTime(start), end: roundTime(item.end), duration: roundTime(item.duration) }
+  }).filter((item) => item.duration >= 0.4).slice(0, 300)
+  if (silenceStarts.length > silenceEnds.length) {
+    const start = silenceStarts.at(-1)
+    silences.push({ start: roundTime(start), end: roundTime(analyzedDuration), duration: roundTime(analyzedDuration - start) })
+  }
+
+  const suggestedCuts = [...new Set([
+    ...uniqueScenes,
+    ...silences.flatMap((item) => [item.start, item.end]),
+  ].map((time) => roundTime(time)))]
+    .filter((time) => time > 0.15 && time < analyzedDuration - 0.15)
+    .sort((a, b) => a - b)
+    .slice(0, 400)
+
+  return {
+    duration: metadata.duration,
+    analyzedDuration: roundTime(analyzedDuration),
+    truncated: metadata.duration > analyzedDuration,
+    shots,
+    silences,
+    suggestedCuts,
+    generatedAt: new Date().toISOString(),
+  }
+}
+
+const boundedNumber = (value, fallback, min, max, label) => {
+  if (value === undefined || value === null || value === '') return fallback
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed < min || parsed > max) {
+    throw new ApiError(400, 'INVALID_RENDER_SETTING', `${label} 必须在 ${min} 到 ${max} 之间。`)
+  }
+  return parsed
+}
+
+const safeText = (value, maxLength, label) => {
+  if (value === undefined || value === null) return ''
+  if (typeof value !== 'string') throw new ApiError(400, 'INVALID_RENDER_SETTING', `${label} 必须是文本。`)
+  return value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').trim().slice(0, maxLength)
+}
+
+const safeHexColor = (value, fallback, label) => {
+  if (value === undefined || value === null || value === '') return fallback
+  if (typeof value !== 'string') throw new ApiError(400, 'INVALID_RENDER_SETTING', `${label} 必须是十六进制颜色。`)
+  const normalized = value.trim().toUpperCase()
+  if (/^#[0-9A-F]{6}$/.test(normalized)) return normalized
+  if (/^#[0-9A-F]{3}$/.test(normalized)) {
+    return `#${normalized.slice(1).split('').map((character) => character.repeat(2)).join('')}`
+  }
+  throw new ApiError(400, 'INVALID_RENDER_SETTING', `${label} 必须使用 #RRGGBB 格式。`)
+}
+
+const firstNonEmpty = (...values) => values.find((value) => {
+  if (Array.isArray(value)) return value.length > 0
+  if (typeof value === 'string') return value.trim().length > 0
+  return value !== undefined && value !== null
+})
+
+const aspectDimensions = (value, quality = 'standard') => {
+  const aspect = String(value || '16:9').toLowerCase()
+  const ratios = {
+    '16:9': '16:9', landscape: '16:9',
+    '9:16': '9:16', portrait: '9:16',
+    '1:1': '1:1', square: '1:1',
+    '4:3': '4:3', '4:5': '4:5',
+  }
+  const normalized = ratios[aspect]
+  const sizes = {
+    preview: { '16:9': [960, 540], '9:16': [540, 960], '1:1': [720, 720], '4:3': [720, 540], '4:5': [720, 900] },
+    standard: { '16:9': [1280, 720], '9:16': [720, 1280], '1:1': [1080, 1080], '4:3': [960, 720], '4:5': [864, 1080] },
+    high: { '16:9': [1920, 1080], '9:16': [1080, 1920], '1:1': [1080, 1080], '4:3': [1440, 1080], '4:5': [1080, 1350] },
+  }
+  const dimensions = normalized ? sizes[quality]?.[normalized] : null
+  if (!dimensions) throw new ApiError(400, 'INVALID_ASPECT', '画幅仅支持 16:9、9:16、1:1、4:3 或 4:5。')
+  return { aspect: normalized, width: dimensions[0], height: dimensions[1] }
+}
+
+const projectClips = (body, project, settings) => {
+  const timelineTracks = project?.timeline?.tracks || project?.tracks
+  const trackClips = timelineTracks
+    ?.filter((track) => track?.type === 'video' || track?.kind === 'video')
+    .filter((track) => !track.hidden)
+    .flatMap((track) => Array.isArray(track.clips) ? track.clips.filter((clip) => clip?.enabled !== false) : [])
+    .sort((a, b) => Number(a?.start || 0) - Number(b?.start || 0))
+  return body.clips || settings.clips || project.clips || project.timeline?.clips || trackClips || []
+}
+
+const normalizeSubtitles = (value, totalDuration) => {
+  if (!value) return []
+  const entries = typeof value === 'string' ? [{ text: value, start: 0, end: totalDuration }] : value
+  if (!Array.isArray(entries)) throw new ApiError(400, 'INVALID_SUBTITLES', '字幕必须是文本或字幕片段数组。')
+  if (entries.length > 200) throw new ApiError(400, 'TOO_MANY_SUBTITLES', '单次渲染最多支持 200 条字幕。')
+  return entries.map((entry, index) => {
+    const text = safeText(typeof entry === 'string' ? entry : entry?.text, 500, `第 ${index + 1} 条字幕`)
+    const start = boundedNumber(typeof entry === 'string' ? 0 : entry?.start, 0, 0, totalDuration, '字幕开始时间')
+    const end = boundedNumber(typeof entry === 'string' ? totalDuration : entry?.end, totalDuration, 0, totalDuration, '字幕结束时间')
+    if (!text || end <= start) throw new ApiError(400, 'INVALID_SUBTITLES', `第 ${index + 1} 条字幕内容为空或时间范围无效。`)
+    return { text, start, end }
+  })
+}
+
+const normalizeRenderRequest = async (body = {}) => {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw new ApiError(400, 'INVALID_RENDER_REQUEST', '渲染参数格式无效。')
+  const project = body.project && typeof body.project === 'object' ? body.project : {}
+  const settings = body.settings && typeof body.settings === 'object'
+    ? body.settings
+    : project.settings && typeof project.settings === 'object' ? project.settings : {}
+  const rawClips = projectClips(body, project, settings)
+  const fallbackMediaId = body.mediaId || settings.mediaId || project.mediaId
+  const clips = Array.isArray(rawClips) && rawClips.length ? rawClips : fallbackMediaId ? [{ mediaId: fallbackMediaId }] : []
+  if (!clips.length) throw new ApiError(400, 'NO_RENDER_CLIPS', '时间线中至少需要一个视频片段。')
+  if (clips.length > 12) throw new ApiError(400, 'TOO_MANY_RENDER_CLIPS', '单次渲染最多支持 12 个视频片段。')
+
+  const globalTrimStart = body.trimStart ?? settings.trimStart
+  const globalTrimEnd = body.trimEnd ?? settings.trimEnd
+  const globalSpeed = body.speed ?? settings.speed
+  const globalVolume = body.volume ?? settings.volume
+  const normalizedClips = await Promise.all(clips.map(async (clip, index) => {
+    if (!clip || typeof clip !== 'object') throw new ApiError(400, 'INVALID_RENDER_CLIP', `第 ${index + 1} 个片段格式无效。`)
+    const metadata = await readMedia(clip.mediaId || clip.assetId || clip.sourceId)
+    const trimStart = boundedNumber(clip.trimStart ?? clip.sourceStart ?? clip.in ?? globalTrimStart, 0, 0, metadata.duration, '片段入点')
+    const trimEnd = boundedNumber(clip.trimEnd ?? clip.sourceEnd ?? clip.out ?? globalTrimEnd, metadata.duration, 0, metadata.duration, '片段出点')
+    if (trimEnd - trimStart < 0.08) throw new ApiError(400, 'INVALID_TRIM_RANGE', `第 ${index + 1} 个片段的入点必须早于出点。`)
+    const speed = boundedNumber(clip.speed ?? globalSpeed, 1, 0.25, 4, '速度')
+    const volume = boundedNumber(clip.volume ?? globalVolume, 1, 0, 2, '音量')
+    const rawTimelineStart = clip.start ?? clip.timelineStart
+    const requestedStart = rawTimelineStart === undefined || rawTimelineStart === null
+      ? null
+      : boundedNumber(rawTimelineStart, 0, 0, 3600, '片段时间线起点')
+    const sourceDuration = trimEnd - trimStart
+    return {
+      mediaId: metadata.id,
+      metadata,
+      trimStart,
+      trimEnd,
+      sourceDuration,
+      outputDuration: sourceDuration / speed,
+      speed,
+      volume,
+      requestedStart,
+      originalIndex: index,
+    }
+  }))
+  const hasTimelineStarts = normalizedClips.some((clip) => clip.requestedStart !== null)
+  const orderedClips = hasTimelineStarts
+    ? [...normalizedClips].sort((first, second) => {
+      if (first.requestedStart === null) return second.requestedStart === null ? first.originalIndex - second.originalIndex : 1
+      if (second.requestedStart === null) return -1
+      return first.requestedStart - second.requestedStart || first.originalIndex - second.originalIndex
+    })
+    : normalizedClips
+  let timelineCursor = 0
+  for (const clip of orderedClips) {
+    const effectiveStart = clip.requestedStart === null ? timelineCursor : Math.max(timelineCursor, clip.requestedStart)
+    clip.gapBefore = Math.max(0, effectiveStart - timelineCursor)
+    clip.timelineStart = effectiveStart
+    timelineCursor = effectiveStart + clip.outputDuration
+  }
+  const totalDuration = timelineCursor
+  if (totalDuration > 3600) throw new ApiError(400, 'RENDER_TOO_LONG', '单次成片时长不能超过 60 分钟。')
+  const quality = String(body.quality ?? settings.quality ?? 'standard')
+  if (!['preview', 'standard', 'high'].includes(quality)) throw new ApiError(400, 'INVALID_QUALITY', '画质仅支持 preview、standard 或 high。')
+  const aspect = aspectDimensions(body.aspect ?? settings.aspect ?? project.aspect, quality)
+  const brightness = boundedNumber(body.brightness ?? settings.brightness, 0, -1, 1, '亮度')
+  const contrast = boundedNumber(body.contrast ?? settings.contrast, 1, 0.1, 3, '对比度')
+  const saturation = boundedNumber(body.saturation ?? settings.saturation, 1, 0, 3, '饱和度')
+  const temperature = boundedNumber(body.temperature ?? settings.temperature ?? settings.color?.temperature, 0, -1, 1, '色温')
+  const vignette = boundedNumber(body.vignette ?? settings.vignette ?? settings.color?.vignette, 0, 0, 1, '暗角')
+  const titleValue = body.title ?? settings.title ?? project.titleOverlay ?? ''
+  const title = safeText(titleValue && typeof titleValue === 'object' ? titleValue.text : titleValue, 200, '标题')
+  const titleSettings = settings.title && typeof settings.title === 'object' ? settings.title : {}
+  const titlePosition = String(body.titlePosition ?? settings.titlePosition ?? titleSettings.position ?? 'top')
+  if (!['top', 'center', 'bottom'].includes(titlePosition)) throw new ApiError(400, 'INVALID_TITLE_POSITION', '标题位置仅支持 top、center 或 bottom。')
+  const titleColor = safeHexColor(body.titleColor ?? settings.titleColor ?? titleSettings.color, '#FFFFFF', '标题颜色')
+  const accentColor = safeHexColor(body.accentColor ?? settings.accentColor ?? titleSettings.accentColor, '#69E2F5', '强调色')
+  const subtitlesValue = firstNonEmpty(
+    body.subtitles,
+    body.subtitle,
+    settings.subtitles,
+    settings.subtitle,
+    project.subtitles,
+    project.captions,
+    titleSettings.subtitle,
+  )
+  const subtitles = normalizeSubtitles(subtitlesValue, totalDuration)
+  const fps = boundedNumber(body.fps ?? settings.fps, 30, 24, 60, '帧率')
+  if (![24, 25, 30, 50, 60].includes(fps)) throw new ApiError(400, 'INVALID_FPS', '帧率仅支持 24、25、30、50 或 60。')
+  return {
+    clips: orderedClips,
+    totalDuration,
+    ...aspect,
+    brightness,
+    contrast,
+    saturation,
+    temperature,
+    vignette,
+    fps,
+    quality,
+    title,
+    titlePosition,
+    titleColor,
+    accentColor,
+    subtitles,
+  }
+}
+
+const assTime = (seconds) => {
+  const value = Math.max(0, seconds)
+  const hours = Math.floor(value / 3600)
+  const minutes = Math.floor((value % 3600) / 60)
+  const secs = (value % 60).toFixed(2).padStart(5, '0')
+  return `${hours}:${String(minutes).padStart(2, '0')}:${secs}`
+}
+
+const assText = (value) => String(value)
+  .replace(/\\/g, '＼')
+  .replace(/{/g, '｛')
+  .replace(/}/g, '｝')
+  .replace(/\r\n?|\n/g, '\\N')
+
+const assColor = (hex) => {
+  const red = hex.slice(1, 3)
+  const green = hex.slice(3, 5)
+  const blue = hex.slice(5, 7)
+  return `&H00${blue}${green}${red}`
+}
+
+const createAssFile = async (job, request) => {
+  if (!request.title && !request.subtitles.length) return null
+  const titleLayout = {
+    top: { alignment: 8, marginV: 58 },
+    center: { alignment: 5, marginV: 0 },
+    bottom: { alignment: 2, marginV: 126 },
+  }[request.titlePosition]
+  const lines = [
+    '[Script Info]',
+    'ScriptType: v4.00+',
+    `PlayResX: ${request.width}`,
+    `PlayResY: ${request.height}`,
+    'ScaledBorderAndShadow: yes',
+    '',
+    '[V4+ Styles]',
+    'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
+    `Style: Title,Heiti SC,${request.width >= 1000 ? 54 : 46},${assColor(request.titleColor)},&H000000FF,${assColor(request.accentColor)},&HA0000000,-1,0,0,0,100,100,0,0,1,2.4,1,${titleLayout.alignment},60,60,${titleLayout.marginV},1`,
+    `Style: Body,Heiti SC,${request.width >= 1000 ? 39 : 34},&H00FFFFFF,&H000000FF,&H0010181F,&HA0000000,-1,0,0,0,100,100,0,0,1,2.2,0,2,52,52,64,1`,
+    '',
+    '[Events]',
+    'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+  ]
+  if (request.title && request.totalDuration > 0.15) {
+    lines.push(`Dialogue: 0,${assTime(0.08)},${assTime(Math.min(3.4, request.totalDuration))},Title,,0,0,0,,${assText(request.title)}`)
+  }
+  for (const cue of request.subtitles) {
+    lines.push(`Dialogue: 0,${assTime(cue.start)},${assTime(cue.end)},Body,,0,0,0,,${assText(cue.text)}`)
+  }
+  const filePath = join(subtitleDir, `${job.id}.ass`)
+  await writeFile(filePath, `${lines.join('\n')}\n`, 'utf8')
+  return filePath
+}
+
+const atempoFilters = (speed) => {
+  const filters = []
+  let remaining = speed
+  while (remaining > 2.00001) {
+    filters.push('atempo=2')
+    remaining /= 2
+  }
+  while (remaining < 0.49999) {
+    filters.push('atempo=0.5')
+    remaining /= 0.5
+  }
+  filters.push(`atempo=${remaining.toFixed(5)}`)
+  return filters.join(',')
+}
+
+const escapeFilterPath = (value) => String(value)
+  .replace(/\\/g, '\\\\')
+  .replace(/:/g, '\\:')
+  .replace(/,/g, '\\,')
+  .replace(/'/g, "\\'")
+
+const renderSummary = (request) => ({
+  clipCount: request.clips.length,
+  duration: roundTime(request.totalDuration),
+  gapDuration: roundTime(request.clips.reduce((sum, clip) => sum + clip.gapBefore, 0)),
+  aspect: request.aspect,
+  width: request.width,
+  height: request.height,
+  fps: request.fps,
+  quality: request.quality,
+  temperature: request.temperature,
+  vignette: request.vignette,
+  title: request.title,
+  titlePosition: request.titlePosition,
+  titleColor: request.titleColor,
+  accentColor: request.accentColor,
+})
+
+const publicJob = (job) => ({
+  id: job.id,
+  status: job.status,
+  progress: job.progress,
+  createdAt: job.createdAt,
+  startedAt: job.startedAt || null,
+  completedAt: job.completedAt || null,
+  error: job.error || null,
+  summary: job.summary,
+  downloadUrl: job.status === 'complete' ? `/api/render/${job.id}/download` : null,
+})
+
+const buildFfmpegArgs = (request, outputPath, subtitlePath) => {
+  const args = ['-y', '-hide_banner', '-loglevel', 'error']
+  for (const clip of request.clips) {
+    args.push('-ss', clip.trimStart.toFixed(6), '-t', clip.sourceDuration.toFixed(6), '-i', mediaSourcePath(clip.metadata))
+  }
+  const graph = []
+  const concatInputs = []
+  request.clips.forEach((clip, index) => {
+    if (clip.gapBefore > 0.0005) {
+      graph.push(
+        `color=c=black:s=${request.width}x${request.height}:r=${request.fps}:d=${clip.gapBefore.toFixed(6)},` +
+        `format=yuv420p,setsar=1[vg${index}]`,
+      )
+      graph.push(
+        `anullsrc=r=48000:cl=stereo:d=${clip.gapBefore.toFixed(6)},` +
+        `aformat=sample_fmts=fltp:channel_layouts=stereo[ag${index}]`,
+      )
+      concatInputs.push(`[vg${index}][ag${index}]`)
+    }
+    const videoFilters = [
+      `scale=${request.width}:${request.height}:force_original_aspect_ratio=increase`,
+      `crop=${request.width}:${request.height}`,
+      'setsar=1',
+      `fps=${request.fps}`,
+      `eq=brightness=${request.brightness.toFixed(4)}:contrast=${request.contrast.toFixed(4)}:saturation=${request.saturation.toFixed(4)}`,
+    ]
+    if (Math.abs(request.temperature) > 0.0005) {
+      const warmth = request.temperature * 0.13
+      videoFilters.push(
+        `colorbalance=rs=${warmth.toFixed(5)}:rm=${warmth.toFixed(5)}:rh=${warmth.toFixed(5)}:` +
+        `bs=${(-warmth).toFixed(5)}:bm=${(-warmth).toFixed(5)}:bh=${(-warmth).toFixed(5)}:pl=1`,
+      )
+    }
+    if (request.vignette > 0.0005) {
+      videoFilters.push(`vignette=angle=${(0.15 + request.vignette * 0.7).toFixed(5)}:eval=init`)
+    }
+    videoFilters.push('format=yuv420p', `setpts=(PTS-STARTPTS)/${clip.speed.toFixed(5)}`)
+    graph.push(`[${index}:v:0]${videoFilters.join(',')}[v${index}]`)
+    if (clip.metadata.hasAudio) {
+      graph.push(
+        `[${index}:a:0]asetpts=PTS-STARTPTS,volume=${clip.volume.toFixed(4)},${atempoFilters(clip.speed)},` +
+        `aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a${index}]`,
+      )
+    } else {
+      graph.push(
+        `anullsrc=r=48000:cl=stereo:d=${clip.outputDuration.toFixed(6)},` +
+        `volume=${clip.volume.toFixed(4)},aformat=sample_fmts=fltp:channel_layouts=stereo[a${index}]`,
+      )
+    }
+    concatInputs.push(`[v${index}][a${index}]`)
+  })
+  graph.push(`${concatInputs.join('')}concat=n=${concatInputs.length}:v=1:a=1[vc][aout]`)
+  graph.push(subtitlePath ? `[vc]ass=${escapeFilterPath(subtitlePath)}[vout]` : '[vc]null[vout]')
+  const encoding = request.quality === 'preview'
+    ? { preset: 'veryfast', crf: '28' }
+    : request.quality === 'high' ? { preset: 'slow', crf: '18' } : { preset: 'medium', crf: '22' }
+  args.push(
+    '-filter_complex', graph.join(';'),
+    '-map', '[vout]', '-map', '[aout]',
+    '-c:v', 'libx264', '-preset', encoding.preset, '-crf', encoding.crf,
+    '-pix_fmt', 'yuv420p', '-profile:v', 'high',
+    '-c:a', 'aac', '-b:a', '192k', '-ar', '48000',
+    '-t', request.totalDuration.toFixed(6), '-movflags', '+faststart',
+    '-progress', 'pipe:1', '-nostats', outputPath,
+  )
+  return args
+}
+
+const runRenderJob = async (job) => {
+  job.status = 'rendering'
+  job.startedAt = new Date().toISOString()
+  const outputPath = join(renderDir, `${job.id}.mp4`)
+  job.outputPath = outputPath
+  let subtitlePath = null
+  try {
+    subtitlePath = await createAssFile(job, job.request)
+    if (job.cancelRequested) throw new ApiError(499, 'RENDER_CANCELLED', '渲染已取消。')
+    const args = buildFfmpegArgs(job.request, outputPath, subtitlePath)
+    await new Promise((resolveRender, rejectRender) => {
+      const child = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] })
+      job.process = child
+      let stderr = ''
+      let progressBuffer = ''
+      let settled = false
+      const finish = (error) => {
+        if (settled) return
+        settled = true
+        job.process = null
+        error ? rejectRender(error) : resolveRender()
+      }
+      child.stdout.on('data', (chunk) => {
+        progressBuffer += chunk.toString()
+        const lines = progressBuffer.split(/\r?\n/)
+        progressBuffer = lines.pop() || ''
+        for (const line of lines) {
+          const match = line.match(/^(?:out_time_us|out_time_ms)=(\d+)$/)
+          if (match) {
+            const seconds = Number(match[1]) / 1_000_000
+            job.progress = Math.max(job.progress, Math.min(99, Math.round((seconds / job.request.totalDuration) * 100)))
+          }
+        }
+      })
+      child.stderr.on('data', (chunk) => { stderr = `${stderr}${chunk}`.slice(-24_000) })
+      child.once('error', finish)
+      child.once('close', (code, signal) => {
+        if (job.cancelRequested) return finish(new ApiError(499, 'RENDER_CANCELLED', '渲染已取消。'))
+        if (code === 0) return finish()
+        const detail = stderr.trim().split('\n').slice(-8).join('\n')
+        finish(new Error(`ffmpeg exited with ${code ?? signal}: ${detail}`))
+      })
+    })
+    const outputStat = await stat(outputPath)
+    if (!outputStat.size) throw new Error('ffmpeg produced an empty file')
+    job.status = 'complete'
+    job.progress = 100
+    job.completedAt = new Date().toISOString()
+  } catch (error) {
+    if (job.cancelRequested || error?.code === 'RENDER_CANCELLED') {
+      job.status = 'cancelled'
+      job.error = null
+    } else {
+      console.error(`Render ${job.id} failed:`, error?.message)
+      job.status = 'failed'
+      job.error = '渲染失败，请检查素材编码或调整剪辑参数后重试。'
+      job.internalError = String(error?.message || error).slice(-2000)
+    }
+    job.completedAt = new Date().toISOString()
+    await unlink(outputPath).catch(() => {})
+  } finally {
+    if (subtitlePath) await unlink(subtitlePath).catch(() => {})
+  }
+}
+
+const pumpRenderQueue = () => {
+  while (activeRenders < 1 && renderQueue.length) {
+    const job = renderQueue.shift()
+    if (!job || job.status !== 'queued') continue
+    activeRenders += 1
+    runRenderJob(job).finally(() => {
+      activeRenders -= 1
+      pumpRenderQueue()
+    })
+  }
+}
+
+app.use(express.json({ limit: '1mb' }))
 
 app.get('/api/status', (_request, response) => {
   response.json({
     provider: 'DeepSeek',
     configured: Boolean(process.env.DEEPSEEK_API_KEY),
     model: process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash',
+    renderer: {
+      engine: 'FFmpeg',
+      ...rendererHealth,
+      formats: ['16:9', '9:16', '1:1', '4:3', '4:5'],
+      maxUploadBytes: MAX_UPLOAD_BYTES,
+    },
   })
+})
+
+app.get('/api/media', async (_request, response) => {
+  const files = await readdir(mediaDir)
+  const ids = files
+    .filter((file) => file.endsWith('.json'))
+    .map((file) => file.slice(0, -5))
+    .filter((id) => UUID_PATTERN.test(id))
+  const results = await Promise.all(ids.map(async (id) => {
+    try {
+      return publicMedia(await readMedia(id))
+    } catch {
+      return null
+    }
+  }))
+  response.json({ media: results.filter(Boolean).sort((a, b) => b.createdAt.localeCompare(a.createdAt)) })
+})
+
+app.post('/api/media', express.raw({ type: () => true, limit: MAX_UPLOAD_BYTES }), async (request, response) => {
+  requireRenderer()
+  if (!Buffer.isBuffer(request.body) || request.body.length === 0) {
+    return apiError(response, 400, 'EMPTY_UPLOAD', '请选择一个有效的视频文件。')
+  }
+  const requestedType = String(request.get('x-file-type') || request.get('content-type') || 'application/octet-stream')
+    .split(';')[0]
+    .trim()
+    .toLowerCase()
+  if (!/^video\/[a-z0-9.+-]{1,64}$/.test(requestedType) && requestedType !== 'application/octet-stream') {
+    return apiError(response, 415, 'UNSUPPORTED_MEDIA_TYPE', '目前仅支持视频素材。')
+  }
+  const name = safeFileName(decodeFileName(request.headers['x-file-name']))
+  const extension = extname(name).toLowerCase() || '.mp4'
+  if (!MEDIA_EXTENSIONS.has(extension)) {
+    return apiError(response, 415, 'UNSUPPORTED_FILE_EXTENSION', '支持 MP4、MOV、M4V、WebM、MKV、AVI、MPEG 和 TS 视频。')
+  }
+  const id = randomUUID()
+  const sourcePath = join(mediaDir, `${id}${extension}`)
+  try {
+    await writeFile(sourcePath, request.body, { flag: 'wx' })
+    const probe = await probeMedia(sourcePath)
+    const metadata = {
+      id,
+      extension,
+      name,
+      type: requestedType === 'application/octet-stream' ? 'video/*' : requestedType,
+      size: request.body.length,
+      createdAt: new Date().toISOString(),
+      ...probe,
+    }
+    await writeFile(mediaMetaPath(id), JSON.stringify(metadata, null, 2), { encoding: 'utf8', flag: 'wx' })
+    mediaCache.set(id, metadata)
+    response.status(201).json({ media: publicMedia(metadata) })
+  } catch (error) {
+    await Promise.allSettled([unlink(sourcePath), unlink(mediaMetaPath(id))])
+    if (error instanceof ApiError) throw error
+    console.error('Media upload failed:', error?.message)
+    throw new ApiError(415, 'MEDIA_PROBE_FAILED', '视频无法解析，请确认文件未损坏且编码受 FFmpeg 支持。')
+  }
+})
+
+app.get('/api/media/:id', async (request, response) => {
+  const metadata = await readMedia(request.params.id)
+  response.json({ media: publicMedia(metadata) })
+})
+
+app.get('/api/media/:id/file', async (request, response, next) => {
+  try {
+    const metadata = await readMedia(request.params.id)
+    response.type(metadata.type === 'video/*' ? 'video/mp4' : metadata.type)
+    response.set('Content-Disposition', `inline; filename="${metadata.id}${metadata.extension}"`)
+    response.sendFile(mediaSourcePath(metadata), (error) => {
+      if (error && !response.headersSent) next(error)
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.post('/api/media/:id/analyze', async (request, response) => {
+  requireRenderer()
+  const metadata = await readMedia(request.params.id)
+  if (metadata.analysis && request.query.refresh !== '1') return response.json({ analysis: metadata.analysis })
+  try {
+    const analysis = await analyzeMedia(metadata)
+    metadata.analysis = analysis
+    await writeFile(mediaMetaPath(metadata.id), JSON.stringify(metadata, null, 2), 'utf8')
+    mediaCache.set(metadata.id, metadata)
+    response.json({ analysis })
+  } catch (error) {
+    console.error(`Media analysis ${metadata.id} failed:`, error?.message)
+    throw new ApiError(422, 'MEDIA_ANALYSIS_FAILED', '素材分析失败，但仍可继续手动剪辑和渲染。')
+  }
+})
+
+app.delete('/api/media/:id', async (request, response) => {
+  const metadata = await readMedia(request.params.id)
+  const isRendering = [...renderJobs.values()].some((job) =>
+    (job.status === 'queued' || job.status === 'rendering') && job.request.clips.some((clip) => clip.mediaId === metadata.id),
+  )
+  if (isRendering) return apiError(response, 409, 'MEDIA_IN_USE', '这个素材正在渲染，完成或取消任务后才能删除。')
+  await Promise.allSettled([unlink(mediaSourcePath(metadata)), unlink(mediaMetaPath(metadata.id))])
+  mediaCache.delete(metadata.id)
+  response.json({ ok: true, id: metadata.id })
+})
+
+app.get('/api/render', (_request, response) => {
+  const jobs = [...renderJobs.values()]
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .slice(0, 50)
+    .map(publicJob)
+  response.json({ jobs })
+})
+
+app.post('/api/render', async (request, response) => {
+  requireRenderer()
+  const normalized = await normalizeRenderRequest(request.body)
+  const job = {
+    id: randomUUID(),
+    status: 'queued',
+    progress: 0,
+    createdAt: new Date().toISOString(),
+    request: normalized,
+    summary: renderSummary(normalized),
+    cancelRequested: false,
+  }
+  renderJobs.set(job.id, job)
+  renderQueue.push(job)
+  pumpRenderQueue()
+  response.status(202).json({ job: publicJob(job) })
+})
+
+app.get('/api/render/:id', (request, response) => {
+  const id = safeId(request.params.id)
+  const job = renderJobs.get(id)
+  if (!job) return apiError(response, 404, 'RENDER_NOT_FOUND', '没有找到这个渲染任务。')
+  response.json({ job: publicJob(job) })
+})
+
+app.delete('/api/render/:id', async (request, response) => {
+  const id = safeId(request.params.id)
+  const job = renderJobs.get(id)
+  if (!job) return apiError(response, 404, 'RENDER_NOT_FOUND', '没有找到这个渲染任务。')
+  if (job.status === 'complete') return apiError(response, 409, 'RENDER_ALREADY_COMPLETE', '成片已经完成，无需取消。')
+  if (job.status === 'failed' || job.status === 'cancelled') return response.json({ job: publicJob(job) })
+  job.cancelRequested = true
+  if (job.status === 'queued') {
+    const queueIndex = renderQueue.findIndex((queued) => queued.id === id)
+    if (queueIndex >= 0) renderQueue.splice(queueIndex, 1)
+    job.status = 'cancelled'
+    job.completedAt = new Date().toISOString()
+  } else {
+    job.status = 'cancelled'
+    job.completedAt = new Date().toISOString()
+    job.process?.kill('SIGTERM')
+  }
+  response.json({ job: publicJob(job) })
+})
+
+app.get('/api/render/:id/download', async (request, response) => {
+  const id = safeId(request.params.id)
+  const job = renderJobs.get(id)
+  if (!job) return apiError(response, 404, 'RENDER_NOT_FOUND', '没有找到这个渲染任务。')
+  if (job.status !== 'complete' || !job.outputPath) return apiError(response, 409, 'RENDER_NOT_READY', '成片还没有准备好。')
+  try {
+    await stat(job.outputPath)
+    response.download(job.outputPath, `axiom-cut-${id.slice(0, 8)}.mp4`)
+  } catch {
+    throw new ApiError(410, 'RENDER_FILE_GONE', '渲染文件已经被系统清理，请重新生成。')
+  }
 })
 
 const fallbackPlan = (prompt) => {
@@ -212,6 +1057,30 @@ app.post('/api/evolve', async (request, response) => {
     console.error('Evolution error:', error)
     response.status(502).json({ error: 'DeepSeek 暂时没有返回有效的进化结果，请稍后重试。' })
   }
+})
+
+app.use('/api', (_request, response) => apiError(response, 404, 'API_NOT_FOUND', '这个接口不存在。'))
+
+app.use((error, request, response, next) => {
+  if (response.headersSent) return next(error)
+  if (error?.type === 'entity.too.large' || error?.status === 413) {
+    const isMediaUpload = request.path === '/api/media'
+    return apiError(
+      response,
+      413,
+      isMediaUpload ? 'UPLOAD_TOO_LARGE' : 'REQUEST_TOO_LARGE',
+      isMediaUpload ? '单个素材不能超过 500MB。' : '请求内容过大。',
+    )
+  }
+  if (error?.type === 'entity.parse.failed') {
+    return apiError(response, 400, 'INVALID_JSON', '请求中的 JSON 格式无效。')
+  }
+  if (error instanceof ApiError) return apiError(response, error.status, error.code, error.message)
+  if (request.path.startsWith('/api/')) {
+    console.error('API error:', error)
+    return apiError(response, 500, 'INTERNAL_ERROR', '服务暂时无法完成这个请求。')
+  }
+  next(error)
 })
 
 if (process.env.NODE_ENV === 'production') {

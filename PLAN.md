@@ -1,38 +1,37 @@
 # Delivery plan
 
-## Current: v0.4 — presentation-first code films
+## Current: v1.0 - complete local video Agent
 
-- [x] General video editing UI with local video upload
-- [x] Large-canvas layout with readable 11px minimum UI type
-- [x] Original / full-size wipe / code-enhanced comparison modes
-- [x] One-click full-screen presentation mode
-- [x] Product-launch comparison demo
-- [x] Four-chapter derivative/local-linearity SVG film
-- [x] Code-drawn instantaneous-speed car story
-- [x] Mathematically consistent curve, secant, tangent, deltas, and limit formula
-- [x] Visible typed scene source of truth
-- [x] Toggleable captions, crop, color, and motion operations
-- [x] Natural-language brief and six-step execution plan
-- [x] Current-step and pipeline observability
-- [x] DeepSeek planning endpoint
-- [x] Self-critique and evolution endpoint
-- [x] Three-way mutation search and winner selection
-- [x] Version score, rationale, and project memory UI
-- [x] One-click end-to-end demo
-- [x] Static fallback without API credentials
-- [x] Reproducible project JSON export
+- [x] Readable three-column editing workspace with a large live canvas
+- [x] Persistent multi-video media library and FFprobe metadata
+- [x] Shot-change, silence, and suggested-cut analysis
+- [x] Editable multi-clip timeline
+- [x] Trim, split, duplicate, move, delete, speed, and volume controls
+- [x] Landscape, portrait, square, 4:3, and 4:5 output
+- [x] Parameterized color treatment and live preview
+- [x] Editable title and timed subtitle tracks
+- [x] DeepSeek six-step structured planning
+- [x] Deterministic local planning fallback
+- [x] Observable Agent execution and current step
+- [x] Media-aware technical context for planning
+- [x] Project-scoped self-evolution with three mutations and one winner
+- [x] Version snapshots, rollback, undo, redo, and autosave
+- [x] Safe project JSON import/export
+- [x] Real asynchronous FFmpeg queue with progress and cancellation
+- [x] Multi-clip concatenation and silent-source audio normalization
+- [x] Chinese title/subtitle burn-in
+- [x] H.264/AAC downloadable MP4
+- [x] Automated real-render smoke test and FFprobe verification
+- [x] Two polished code-only presentation films
+- [x] DeepSeek key kept server-side
+- [x] GitHub-ready MIT open-source repository
 
-## Next: v0.5 — real rendering tools
+## Later: hosted / collaborative edition
 
-- [ ] Generate Remotion compositions from the approved plan
-- [x] Add local asset upload and browser preview
-- [ ] Add media metadata, speech transcription, and shot inspection
-- [ ] Render preview frames and feed them into the visual critic
-- [ ] Add explicit approve/reject/rollback controls
-
-## Later: v1.0 — production rendering
-
-- [ ] Isolated render workers and job queue
-- [ ] MP4 output, progress, cancellation, and retry
-- [ ] Persistent project/version storage
-- [ ] Evaluation dataset and regression suite
+- [ ] Optional local Whisper speech-to-text plugin
+- [ ] Dedicated background-music and voice-over tracks
+- [ ] Drag-to-reorder clips and transition handles
+- [ ] Persistent database and object storage
+- [ ] Isolated multi-worker render service
+- [ ] Team review comments and approval gates
+- [ ] Automated visual regression set for real user footage

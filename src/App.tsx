@@ -5,6 +5,7 @@ import {
   Scissors, ShieldCheck, Sparkles, SplitSquareHorizontal, Upload, Video,
   WandSparkles, X, Zap,
 } from 'lucide-react'
+import StudioWorkspace from './StudioWorkspace'
 
 type DemoId = 'math' | 'product'
 type CompareMode = 'before' | 'split' | 'after'
@@ -284,7 +285,7 @@ function UploadedScene({ media, variant, playing, ops }: { media: UploadedMedia;
   </div>
 }
 
-function App() {
+function ShowcaseApp({ onBack }: { onBack: () => void }) {
   const [activeDemo, setActiveDemo] = useState<DemoId>('math')
   const [compareMode, setCompareMode] = useState<CompareMode>('after')
   const [stage, setStage] = useState<PipelineStage>('idle')
@@ -405,7 +406,7 @@ function App() {
   }
 
   const downloadProject = () => {
-    const project = { schema: 'axiom-cut/v0.4', source: uploaded ? { name: uploaded.name, size: uploaded.size, localOnly: true } : { demo: activeDemo }, prompt, plan, operations: editOps, code: generatedCode }
+    const project = { schema: 'axiom-cut/showcase-v1', source: uploaded ? { name: uploaded.name, size: uploaded.size, localOnly: true } : { demo: activeDemo }, prompt, plan, operations: editOps, code: generatedCode }
     const url = URL.createObjectURL(new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' }))
     const anchor = document.createElement('a')
     anchor.href = url
@@ -437,6 +438,7 @@ function App() {
       </nav>
       <div className="top-actions">
         <div className="code-badge"><Code2 size={16} /><span>0 AI IMAGES</span></div>
+        <button className="upload-button" onClick={onBack}><Film size={17} /> 返回剪辑台</button>
         <button className="upload-button" onClick={() => fileRef.current?.click()}><Upload size={17} /> 上传视频</button>
         <button className="present-button" onClick={openPresentation}><Expand size={17} /> 演示播放</button>
         <button className="icon-button" onClick={() => setShowExport(true)} aria-label="导出工程"><Download size={18} /></button>
@@ -485,12 +487,12 @@ function App() {
           <footer><span>{apiStatus.configured ? `DeepSeek · ${apiStatus.model}` : 'Local deterministic mode'}</span><button onClick={generate} disabled={isRunning || !prompt.trim()}>{isRunning ? <RefreshCw className="spin" size={18} /> : <ArrowUp size={19} />}</button></footer>
         </div>
 
-        {uploaded && <div className="source-card"><Video size={20} /><div><span>本地视频</span><strong>{uploaded.name}</strong><small>{uploaded.size} · Object URL</small></div><button onClick={() => selectDemo(activeDemo)}><X size={16} /></button></div>}
+        {uploaded && <div className="source-card"><Video size={20} /><div><span>本地视频</span><strong>{uploaded.name}</strong><small>{uploaded.size} · 浏览器临时预览</small></div><button onClick={() => selectDemo(activeDemo)}><X size={16} /></button></div>}
 
         <div className="director-scroll">
           <div className="section-heading"><span>代码操作</span><b>{Object.values(editOps).filter(Boolean).length}/4 开启</b></div>
           <div className="operation-grid">
-            {([['captions', '自动字幕', 'speech → timecode'], ['smartCrop', '主体裁切', 'track → 16:9'], ['color', '程序调色', 'params → grade'], ['motion', '运动图形', 'SVG → frames']] as [keyof EditOps, string, string][]).map(([key, title, detail]) => <button key={key} className={editOps[key] ? 'enabled' : ''} onClick={() => setEditOps((value) => ({ ...value, [key]: !value[key] }))}><span><Check size={13} /></span><div><strong>{title}</strong><small>{detail}</small></div></button>)}
+            {([['captions', '字幕图层', 'text → timecode'], ['smartCrop', '安全构图', 'layout → 16:9'], ['color', '程序调色', 'params → grade'], ['motion', '运动图形', 'SVG → frames']] as [keyof EditOps, string, string][]).map(([key, title, detail]) => <button key={key} className={editOps[key] ? 'enabled' : ''} onClick={() => setEditOps((value) => ({ ...value, [key]: !value[key] }))}><span><Check size={13} /></span><div><strong>{title}</strong><small>{detail}</small></div></button>)}
           </div>
 
           <div className="section-heading"><span>生成过程</span><b>{Math.max(0, Math.min(activeStep + (stage === 'ready' ? 1 : 0), 6))}/6</b></div>
@@ -515,8 +517,16 @@ function App() {
       <footer><button onClick={() => setPlaying((value) => !value)}>{playing ? <Pause size={22} fill="currentColor" /> : <Play size={22} fill="currentColor" />}</button><strong>00:{String(Math.round(progress * duration)).padStart(2, '0')} / 00:{String(duration).padStart(2, '0')}</strong><div><i style={{ width: `${progress * 100}%` }} /></div><span><Code2 size={16} /> LIVE SVG · NO AI IMAGES</span></footer>
     </div>}
 
-    {showExport && <div className="modal-backdrop" onMouseDown={() => setShowExport(false)}><div className="export-modal" onMouseDown={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setShowExport(false)}><X size={20} /></button><div className="export-icon"><FileCode2 size={30} /></div><span>REPRODUCIBLE PROJECT</span><h2>导出代码动画工程</h2><p>包含场景代码、章节时间、操作参数和素材引用。上传的视频本体不会写入导出文件。</p><div className="export-grid"><div><span>SCHEMA</span><strong>v0.4</strong></div><div><span>SCENES</span><strong>04</strong></div><div><span>FPS</span><strong>30</strong></div></div><button className="download-project" onClick={downloadProject}><Download size={18} /> 下载工程 JSON</button><small>真实 MP4 输出仍需接入 Remotion / FFmpeg Worker。</small></div></div>}
+    {showExport && <div className="modal-backdrop" onMouseDown={() => setShowExport(false)}><div className="export-modal" onMouseDown={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setShowExport(false)}><X size={20} /></button><div className="export-icon"><FileCode2 size={30} /></div><span>REPRODUCIBLE PROJECT</span><h2>导出代码动画工程</h2><p>包含场景代码、章节时间、操作参数和素材引用。上传的视频本体不会写入导出文件。</p><div className="export-grid"><div><span>SCHEMA</span><strong>v1.0</strong></div><div><span>SCENES</span><strong>04</strong></div><div><span>FPS</span><strong>30</strong></div></div><button className="download-project" onClick={downloadProject}><Download size={18} /> 下载工程 JSON</button><small>这是代码动画展示工程；返回剪辑工作台可渲染并下载真实 H.264 MP4。</small></div></div>}
   </div>
+}
+
+function App() {
+  const [view, setView] = useState<'studio' | 'showcase'>('studio')
+  return <>
+    <div style={{ display: view === 'studio' ? 'block' : 'none' }} aria-hidden={view !== 'studio'}><StudioWorkspace onOpenShowcase={() => setView('showcase')} /></div>
+    {view === 'showcase' && <ShowcaseApp onBack={() => setView('studio')} />}
+  </>
 }
 
 export default App
