@@ -123,6 +123,7 @@ const QUICK_RECIPES = [
 ]
 const MAX_RENDER_CLIPS = 12
 const MAX_CAPTIONS = 200
+const PLAYHEAD_PUBLISH_INTERVAL_MS = 80
 
 const sleep = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds))
 const makeId = (prefix: string) => `${prefix}-${crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`
@@ -139,6 +140,7 @@ const formatTime = (seconds: number) => {
 }
 const formatDuration = (seconds: number) => seconds < 60 ? `${seconds.toFixed(1)}s` : `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`
 const clipTimelineEnd = (clip: { start: number; sourceStart: number; sourceEnd: number; speed: number }) => clip.start + (clip.sourceEnd - clip.sourceStart) / clip.speed
+const clipTimingKey = (clip: { id: string; start: number; sourceStart: number; sourceEnd: number; speed: number }) => `${clip.id}:${clip.start}:${clip.sourceStart}:${clip.sourceEnd}:${clip.speed}`
 
 const mediaToAsset = (media: StudioMedia): MediaAsset => ({
   id: media.id,
@@ -179,6 +181,8 @@ function StudioWorkspace({ onOpenShowcase }: { onOpenShowcase: () => void }) {
   const [apiStatus, setApiStatus] = useState<ApiStatus>({ provider: 'DeepSeek', configured: false, model: 'deepseek-v4-flash', renderer: { available: false, ready: false } })
   const [evolution, setEvolution] = useState<EvolutionResult | null>(null)
   const [playing, setPlaying] = useState(false)
+  const [playhead, setPlayhead] = useState(project.playhead)
+  const [seekRevision, setSeekRevision] = useState(0)
   const [showGuides, setShowGuides] = useState(true)
   const [timelineZoom, setTimelineZoom] = useState(1)
   const [uploadProgress, setUploadProgress] = useState<number | null>(null)
@@ -201,6 +205,13 @@ function StudioWorkspace({ onOpenShowcase }: { onOpenShowcase: () => void }) {
   const previewRef = useRef<HTMLDivElement>(null)
   const renderAbortRef = useRef<AbortController | null>(null)
   const latestProjectRef = useRef(project)
+  const playheadRef = useRef(project.playhead)
+  const playbackCursorRef = useRef(project.playhead)
+  const pendingSeekRef = useRef(true)
+  const syncedVideoRef = useRef<{ clipId: string; timingKey: string } | null>(null)
+  const playAttemptRef = useRef(0)
+  const pendingPlayVideoRef = useRef<HTMLVideoElement | null>(null)
+  const playbackRunRef = useRef(0)
 
   const videoTracks = project.tracks.filter((track) => track.kind === 'video')
   const primaryVideoTrack = videoTracks[0]
@@ -217,21 +228,22 @@ function StudioWorkspace({ onOpenShowcase }: { onOpenShowcase: () => void }) {
   const neonSyncAssets = sortedMedia.filter((asset) => asset.builtIn && asset.collection === 'neon-sync')
   const neonSyncSourceCount = neonSyncAssets.filter((asset) => asset.role === 'source').length
   const neonSyncResultCount = neonSyncAssets.filter((asset) => asset.role === 'result').length
-  const duration = Math.max(projectDuration(project), 1)
+  const rawDuration = projectDuration(project)
+  const duration = Math.max(rawDuration, 1)
   const timelineDuration = Math.max(duration, 10)
   const selectedAsset = project.media.find((asset) => asset.id === project.selection.mediaId) ?? sortedMedia[0] ?? null
   const selectedClipEntry = project.selection.clipId ? findClip(project, project.selection.clipId) : null
   const timelineClip = videoClips.find((clip) => {
     const end = clip.start + (clip.sourceEnd - clip.sourceStart) / clip.speed
-    return project.playhead >= clip.start && project.playhead < end
+    return playhead >= clip.start && playhead < end
   })
   const previewAsset = timelineClip
     ? project.media.find((asset) => asset.id === timelineClip.mediaId) ?? null
     : null
   const previewTime = timelineClip
-    ? timelineClip.sourceStart + Math.max(0, project.playhead - timelineClip.start) * timelineClip.speed
-    : project.playhead
-  const activeCaption = currentCaptionAt(project.captions, project.playhead)
+    ? timelineClip.sourceStart + Math.max(0, playhead - timelineClip.start) * timelineClip.speed
+    : playhead
+  const activeCaption = currentCaptionAt(project.captions, playhead)
   const activeAnalysis = selectedAsset ? analysis[selectedAsset.id] : undefined
   const renderPercent = renderJob ? clamp(renderJob.progress <= 1 ? renderJob.progress * 100 : renderJob.progress, 0, 100) : 0
   const renderStale = renderJob?.status === 'complete' && renderRevision !== project.updatedAt
@@ -249,6 +261,8 @@ function StudioWorkspace({ onOpenShowcase }: { onOpenShowcase: () => void }) {
     [`规模不超过 ${MAX_RENDER_CLIPS} 片段 / ${MAX_CAPTIONS} 字幕`, renderScaleValid],
   ]
   const renderReady = preflightChecks.every(([, pass]) => pass)
+  const videoClipsRef = useRef(videoClips)
+  const durationRef = useRef(rawDuration)
 
   useEffect(() => {
     getStatus().then(setApiStatus).catch(() => undefined)
@@ -306,40 +320,210 @@ function StudioWorkspace({ onOpenShowcase }: { onOpenShowcase: () => void }) {
   }, [mediaOpen])
 
   useEffect(() => {
+    videoClipsRef.current = videoClips
+    durationRef.current = rawDuration
+  }, [rawDuration, videoClips])
+
+  useEffect(() => {
+    if (project.playhead === playheadRef.current) return
+    playheadRef.current = project.playhead
+    playbackCursorRef.current = project.playhead
+    pendingSeekRef.current = true
+    syncedVideoRef.current = null
+    setPlayhead(project.playhead)
+  }, [project.playhead])
+
+  useEffect(() => {
     if (!playing) return
+    const run = ++playbackRunRef.current
     let frame = 0
     let previous = performance.now()
+    let lastPublished = previous
+
+    playbackCursorRef.current = playheadRef.current
+
     const tick = (now: number) => {
+      if (playbackRunRef.current !== run) return
       const elapsed = Math.min(.1, (now - previous) / 1000)
       previous = now
-      const next = project.playhead + elapsed
-      if (next >= duration) {
-        dispatch({ type: 'SET_PLAYHEAD', time: duration })
+      const clips = videoClipsRef.current
+      const totalDuration = durationRef.current
+      let next = playbackCursorRef.current
+      let publishImmediately = false
+      const activeClip = clips.find((clip) => next >= clip.start && next < clipTimelineEnd(clip))
+
+      if (activeClip) {
+        const video = videoRef.current
+        const synced = syncedVideoRef.current
+        const videoMatchesClip = video?.dataset.timelineClipId === activeClip.id
+          && synced?.clipId === activeClip.id
+          && synced.timingKey === clipTimingKey(activeClip)
+
+        if (video && videoMatchesClip && video.readyState >= 2 && !video.seeking) {
+          const sourceTime = clamp(video.currentTime, activeClip.sourceStart, activeClip.sourceEnd)
+          next = activeClip.start + (sourceTime - activeClip.sourceStart) / activeClip.speed
+          if (video.ended || sourceTime >= activeClip.sourceEnd - .01) {
+            next = clipTimelineEnd(activeClip)
+            publishImmediately = true
+          }
+        }
+      } else {
+        const nextClip = clips.find((clip) => clip.start > next + .0001)
+        const advanced = next + elapsed
+        if (nextClip && advanced >= nextClip.start) {
+          next = nextClip.start
+          publishImmediately = true
+        } else {
+          next = advanced
+        }
+      }
+
+      next = clamp(next, 0, totalDuration)
+      playbackCursorRef.current = next
+
+      if (publishImmediately || now - lastPublished >= PLAYHEAD_PUBLISH_INTERVAL_MS) {
+        lastPublished = now
+        if (Math.abs(next - playheadRef.current) >= .001) {
+          playheadRef.current = next
+          setPlayhead(next)
+        }
+      }
+
+      if (next >= totalDuration - .0001) {
+        playheadRef.current = totalDuration
+        playbackCursorRef.current = totalDuration
+        setPlayhead(totalDuration)
+        dispatch({ type: 'SET_PLAYHEAD', time: totalDuration })
         setPlaying(false)
         return
       }
-      dispatch({ type: 'SET_PLAYHEAD', time: next })
       frame = requestAnimationFrame(tick)
     }
     frame = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(frame)
-  }, [duration, playing, project.playhead])
+    return () => {
+      if (playbackRunRef.current === run) playbackRunRef.current += 1
+      cancelAnimationFrame(frame)
+    }
+  }, [playing])
 
   useEffect(() => {
     const video = videoRef.current
-    if (!video || !previewAsset?.serverUrl) return
+    if (!video || !timelineClip || !previewAsset?.serverUrl) {
+      playAttemptRef.current += 1
+      pendingPlayVideoRef.current = null
+      syncedVideoRef.current = null
+      return
+    }
     const desired = clamp(previewTime, 0, Math.max(0, previewAsset.duration - .02))
-    if (Math.abs(video.currentTime - desired) > .18) video.currentTime = desired
-    video.playbackRate = timelineClip?.speed ?? 1
-    video.volume = clamp(timelineClip?.volume ?? 1, 0, 1)
-    if (playing) video.play().catch(() => undefined)
-    else video.pause()
-  }, [playing, previewAsset?.id, previewAsset?.serverUrl, previewTime, timelineClip?.speed, timelineClip?.volume])
+    const timingKey = clipTimingKey(timelineClip)
+    const synced = syncedVideoRef.current
+    const requiresSeek = pendingSeekRef.current
+      || synced?.clipId !== timelineClip.id
+      || synced.timingKey !== timingKey
+      || !playing
+
+    video.playbackRate = timelineClip.speed
+    video.volume = clamp(timelineClip.volume, 0, 1)
+
+    if (requiresSeek && Math.abs(video.currentTime - desired) > .012) video.currentTime = desired
+    pendingSeekRef.current = false
+    syncedVideoRef.current = { clipId: timelineClip.id, timingKey }
+
+    if (playing) {
+      if (video.paused && pendingPlayVideoRef.current !== video) {
+        const attempt = ++playAttemptRef.current
+        pendingPlayVideoRef.current = video
+        void video.play().then(() => {
+          if (playAttemptRef.current === attempt) pendingPlayVideoRef.current = null
+        }).catch((error: unknown) => {
+          if (playAttemptRef.current !== attempt || videoRef.current !== video) return
+          playAttemptRef.current += 1
+          playbackRunRef.current += 1
+          pendingPlayVideoRef.current = null
+          video.pause()
+          const current = clamp(playbackCursorRef.current, 0, durationRef.current)
+          playheadRef.current = current
+          playbackCursorRef.current = current
+          setPlayhead(current)
+          dispatch({ type: 'SET_PLAYHEAD', time: current })
+          setPlaying(false)
+          setToast({
+            kind: 'error',
+            message: error instanceof DOMException && error.name === 'NotAllowedError'
+              ? '浏览器阻止了预览播放，请再次点击播放。'
+              : '预览视频播放失败，请检查素材是否仍可访问后重试。',
+          })
+        })
+      }
+    } else {
+      playAttemptRef.current += 1
+      pendingPlayVideoRef.current = null
+      video.pause()
+    }
+  }, [playing, playhead, previewAsset?.id, previewAsset?.serverUrl, previewTime, seekRevision, timelineClip?.id, timelineClip?.sourceStart, timelineClip?.sourceEnd, timelineClip?.speed, timelineClip?.volume])
 
   useEffect(() => () => renderAbortRef.current?.abort(), [])
 
   const notify = (kind: Toast['kind'], message: string) => setToast({ kind, message })
   const edit = (action: HistoryAction) => dispatch(action)
+  const resetPlaybackClock = (targetPlayhead: number, targetDuration = durationRef.current) => {
+    const safeDuration = Math.max(0, Number.isFinite(targetDuration) ? targetDuration : 0)
+    const next = clamp(targetPlayhead, 0, safeDuration)
+    playbackRunRef.current += 1
+    playAttemptRef.current += 1
+    pendingPlayVideoRef.current = null
+    videoRef.current?.pause()
+    setPlaying(false)
+    durationRef.current = safeDuration
+    playheadRef.current = next
+    playbackCursorRef.current = next
+    pendingSeekRef.current = true
+    syncedVideoRef.current = null
+    setPlayhead(next)
+    setSeekRevision((revision) => revision + 1)
+  }
+  const seekPlayhead = (time: number) => {
+    const next = clamp(time, 0, durationRef.current)
+    playheadRef.current = next
+    playbackCursorRef.current = next
+    pendingSeekRef.current = true
+    syncedVideoRef.current = null
+    setPlayhead(next)
+    setSeekRevision((revision) => revision + 1)
+    dispatch({ type: 'SET_PLAYHEAD', time: next })
+  }
+  const togglePlayback = () => {
+    if (playing) {
+      const current = clamp(playbackCursorRef.current, 0, durationRef.current)
+      playbackRunRef.current += 1
+      playAttemptRef.current += 1
+      pendingPlayVideoRef.current = null
+      videoRef.current?.pause()
+      playheadRef.current = current
+      setPlayhead(current)
+      setPlaying(false)
+      dispatch({ type: 'SET_PLAYHEAD', time: current })
+      return
+    }
+    if (playheadRef.current >= durationRef.current - .0001) seekPlayhead(0)
+    playbackCursorRef.current = playheadRef.current
+    pendingSeekRef.current = true
+    setSeekRevision((revision) => revision + 1)
+    setPlaying(true)
+  }
+  const openShowcase = () => {
+    const current = clamp(playbackCursorRef.current, 0, durationRef.current)
+    playbackRunRef.current += 1
+    playAttemptRef.current += 1
+    pendingPlayVideoRef.current = null
+    videoRef.current?.pause()
+    setPlaying(false)
+    playheadRef.current = current
+    playbackCursorRef.current = current
+    setPlayhead(current)
+    dispatch({ type: 'SET_PLAYHEAD', time: current })
+    onOpenShowcase()
+  }
 
   const importMediaFiles = async (files: File[]) => {
     const remainingSlots = Math.max(0, MAX_RENDER_CLIPS - videoClips.length)
@@ -576,7 +760,7 @@ function StudioWorkspace({ onOpenShowcase }: { onOpenShowcase: () => void }) {
       notify('error', `单个成片最多支持 ${MAX_RENDER_CLIPS} 个视频片段。`)
       return
     }
-    edit({ type: 'SPLIT_CLIP', clipId: clip.id, timelineTime: project.playhead, rightClipId: makeId('clip'), at: new Date().toISOString() })
+    edit({ type: 'SPLIT_CLIP', clipId: clip.id, timelineTime: playhead, rightClipId: makeId('clip'), at: new Date().toISOString() })
   }
 
   const nudgeSelectedClip = (delta: number) => {
@@ -594,7 +778,7 @@ function StudioWorkspace({ onOpenShowcase }: { onOpenShowcase: () => void }) {
   const selectAsset = (mediaId: string) => {
     const firstClip = videoClips.find((clip) => clip.mediaId === mediaId)
     edit({ type: 'SELECT', selection: { mediaId, clipId: null, captionId: null, trackId: null } })
-    if (firstClip) edit({ type: 'SET_PLAYHEAD', time: firstClip.start })
+    if (firstClip) seekPlayhead(firstClip.start)
   }
 
   const addSelectedAssetToTimeline = () => {
@@ -646,7 +830,7 @@ function StudioWorkspace({ onOpenShowcase }: { onOpenShowcase: () => void }) {
       notify('error', `单个成片最多支持 ${MAX_CAPTIONS} 条字幕。`)
       return
     }
-    edit({ type: 'ADD_CAPTION', caption: createCaption(project.playhead), select: true, at: new Date().toISOString() })
+    edit({ type: 'ADD_CAPTION', caption: createCaption(playhead), select: true, at: new Date().toISOString() })
   }
 
   const createVersion = () => {
@@ -654,6 +838,16 @@ function StudioWorkspace({ onOpenShowcase }: { onOpenShowcase: () => void }) {
     edit({ type: 'CREATE_VERSION', version: { id: makeId('version'), name: `手动快照 · ${project.name}`, createdAt: at }, at })
     setVersionsOpen(true)
     notify('success', '已创建可回滚版本。')
+  }
+
+  const restoreVersion = (versionId: string) => {
+    const version = project.versions.find((candidate) => candidate.id === versionId)
+    if (!version) return
+    const targetProject = { ...version.snapshot, versions: project.versions }
+    resetPlaybackClock(targetProject.playhead, projectDuration(targetProject))
+    edit({ type: 'RESTORE_VERSION', versionId, at: new Date().toISOString() })
+    setVersionsOpen(false)
+    notify('success', '已恢复所选版本，可继续撤销。')
   }
 
   const exportProject = () => {
@@ -672,6 +866,7 @@ function StudioWorkspace({ onOpenShowcase }: { onOpenShowcase: () => void }) {
     if (!file) return
     try {
       const imported = deserializeProject(await file.text())
+      resetPlaybackClock(imported.playhead, projectDuration(imported))
       edit({ type: 'RESET_HISTORY', project: imported })
       notify('success', '工程已载入；持久素材会继续使用本地媒体服务。')
     } catch {
@@ -746,7 +941,7 @@ function StudioWorkspace({ onOpenShowcase }: { onOpenShowcase: () => void }) {
   const seekTimeline = (event: React.MouseEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.getBoundingClientRect()
     const ratio = clamp((event.clientX - rect.left) / rect.width, 0, 1)
-    edit({ type: 'SET_PLAYHEAD', time: ratio * timelineDuration })
+    seekPlayhead(ratio * timelineDuration)
   }
 
   const filterStyle = {
@@ -768,7 +963,7 @@ function StudioWorkspace({ onOpenShowcase }: { onOpenShowcase: () => void }) {
         <div className="toolbar-group"><button className="studio-icon-button" disabled={!history.past.length} onClick={() => edit({ type: 'UNDO' })} title="撤销"><Undo2 size={18} /></button><button className="studio-icon-button" disabled={!history.future.length} onClick={() => edit({ type: 'REDO' })} title="重做"><Redo2 size={18} /></button></div>
         <span className={`save-state ${saveFailed ? 'failed' : ''}`}>{saveFailed ? <AlertCircle size={15} /> : saved ? <CheckCircle2 size={15} /> : <LoaderCircle className="spin" size={15} />} {saveFailed ? '保存失败' : saved ? '已自动保存' : '保存中'}</span>
         <button className="studio-button mobile-library" onClick={() => setMediaOpen(true)} title="打开素材库"><Film size={17} /> 素材库</button>
-        <button className="studio-button showcase-link hide-compact" onClick={onOpenShowcase}><ImagePlay size={17} /> 展示 Demo</button>
+        <button className="studio-button showcase-link hide-compact" onClick={openShowcase}><ImagePlay size={17} /> 展示 Demo</button>
         <button className="studio-button hide-compact" onClick={() => setVersionsOpen(true)}><History size={17} /> 版本</button>
         <button className="studio-button primary" disabled={!renderReady && !rendering} onClick={() => { setTab('export'); if (!rendering && (!renderComplete || renderStale)) void renderVideo() }}><Download size={17} /> {rendering ? '渲染中' : renderFresh ? '查看成片' : renderStale ? '重新渲染' : '导出成片'}</button>
       </div>
@@ -818,24 +1013,24 @@ function StudioWorkspace({ onOpenShowcase }: { onOpenShowcase: () => void }) {
       <section className="editor-center">
         <div className="preview-region">
           <div className="canvas-toolbar"><div><span><i /> LIVE PREVIEW</span><span>{project.settings.width} × {project.settings.height}</span></div><div><button className="studio-icon-button" onClick={() => setShowGuides((value) => !value)} title="安全线">{showGuides ? <Eye size={16} /> : <Square size={16} />}</button><button className="studio-icon-button" onClick={() => previewRef.current?.requestFullscreen?.()} title="全屏预览"><Maximize2 size={16} /></button></div></div>
-          <div ref={previewRef} className={`preview-stage ${ratioClass}`} onClick={() => videoClips.length && setPlaying((value) => !value)}>
+          <div ref={previewRef} className={`preview-stage ${ratioClass}`} onClick={() => videoClips.length && togglePlayback()}>
             {previewAsset?.serverUrl ? <>
-              <video ref={videoRef} key={previewAsset.id} src={previewAsset.serverUrl} style={filterStyle} playsInline preload="metadata" />
+              <video ref={videoRef} key={previewAsset.id} data-timeline-clip-id={timelineClip?.id} src={previewAsset.serverUrl} style={filterStyle} playsInline preload="metadata" />
               <div className="preview-temperature" style={{ background: temperatureColor }} />
               <div className="preview-filter" style={{ background: `radial-gradient(circle, transparent 50%, rgba(0,0,0,${project.settings.color.vignette * .72}) 100%)` }} />
               {showGuides && <div className="safe-guides" />}
               {project.settings.title.enabled && <div className={`preview-title position-${project.settings.title.position}`}><span style={{ color: project.settings.title.accentColor }}>{project.settings.aspect === '9:16' || project.settings.aspect === '4:5' ? 'AXIOM CUT / CODE FILM' : 'AXIOM CUT / CODE DIRECTED'}</span><strong style={{ color: project.settings.title.color }}>{project.settings.title.text}</strong></div>}
               {(activeCaption?.text || project.settings.title.subtitle) && <div className="preview-caption">{activeCaption?.text || project.settings.title.subtitle}</div>}
               <div className="preview-status"><i /> {playing ? 'PLAYING' : 'FRAME READY'} · {project.settings.aspect}</div>
-            </> : project.media.length ? <div className="preview-gap"><div><Clock3 size={28} /><strong>{videoClips.length ? '当前是时间线空隙' : '素材尚未加入时间线'}</strong><span>{playing ? '正在播放黑场，进入下一片段后会继续显示画面。' : '这里会在成片中输出黑场与静音；可移动播放头或把素材加入时间线。'}</span>{videoClips.length ? <button onClick={(event) => { event.stopPropagation(); edit({ type: 'SET_PLAYHEAD', time: videoClips[0].start }) }}><Play size={15} /> 跳到首个片段</button> : <button onClick={(event) => { event.stopPropagation(); addSelectedAssetToTimeline() }}><Plus size={15} /> 加入所选素材</button>}</div></div> : <div className="preview-empty"><div className="empty-film-copy"><span>COMPLETE VIDEO AGENT / V1.0</span><h1>从一句话到<br /><em>真实成片</em></h1><p>导入视频，Agent 会检查镜头、生成计划、写入可编辑时间线，并由 FFmpeg 渲染出可下载的 MP4。</p><div className="empty-film-actions"><button onClick={(event) => { event.stopPropagation(); mediaInputRef.current?.click() }}><Upload size={18} /> 导入视频开始</button><button onClick={(event) => { event.stopPropagation(); onOpenShowcase() }}><CirclePlay size={18} /> 查看代码动画 Demo</button></div></div></div>}
+            </> : project.media.length ? <div className="preview-gap"><div><Clock3 size={28} /><strong>{videoClips.length ? '当前是时间线空隙' : '素材尚未加入时间线'}</strong><span>{playing ? '正在播放黑场，进入下一片段后会继续显示画面。' : '这里会在成片中输出黑场与静音；可移动播放头或把素材加入时间线。'}</span>{videoClips.length ? <button onClick={(event) => { event.stopPropagation(); seekPlayhead(videoClips[0].start) }}><Play size={15} /> 跳到首个片段</button> : <button onClick={(event) => { event.stopPropagation(); addSelectedAssetToTimeline() }}><Plus size={15} /> 加入所选素材</button>}</div></div> : <div className="preview-empty"><div className="empty-film-copy"><span>COMPLETE VIDEO AGENT / V1.0</span><h1>从一句话到<br /><em>真实成片</em></h1><p>导入视频，Agent 会检查镜头、生成计划、写入可编辑时间线，并由 FFmpeg 渲染出可下载的 MP4。</p><div className="empty-film-actions"><button onClick={(event) => { event.stopPropagation(); mediaInputRef.current?.click() }}><Upload size={18} /> 导入视频开始</button><button onClick={(event) => { event.stopPropagation(); openShowcase() }}><CirclePlay size={18} /> 查看代码动画 Demo</button></div></div></div>}
           </div>
         </div>
 
         <div className="studio-transport">
-          <div className="transport-cluster"><button onClick={() => edit({ type: 'SET_PLAYHEAD', time: 0 })}><SkipBack size={17} /></button><button className="play-main" disabled={!videoClips.length} onClick={() => setPlaying((value) => !value)}>{playing ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}</button><button onClick={() => edit({ type: 'SET_PLAYHEAD', time: Math.min(duration, project.playhead + 1 / 30) })}><SkipForward size={17} /></button></div>
-          <strong className="transport-time">{formatTime(project.playhead)} <span>/ {formatTime(duration)}</span></strong>
+          <div className="transport-cluster"><button onClick={() => seekPlayhead(0)}><SkipBack size={17} /></button><button className="play-main" disabled={!videoClips.length} onClick={togglePlayback}>{playing ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}</button><button onClick={() => seekPlayhead(Math.min(duration, playhead + 1 / 30))}><SkipForward size={17} /></button></div>
+          <strong className="transport-time">{formatTime(playhead)} <span>/ {formatTime(duration)}</span></strong>
           <span className="transport-time transport-fps">{project.settings.fps} FPS</span>
-          <input className="playhead-slider" aria-label="播放位置" type="range" min="0" max={duration} step=".01" value={Math.min(project.playhead, duration)} onChange={(event) => edit({ type: 'SET_PLAYHEAD', time: Number(event.target.value) })} />
+          <input className="playhead-slider" aria-label="播放位置" type="range" min="0" max={duration} step=".01" value={Math.min(playhead, duration)} onChange={(event) => seekPlayhead(Number(event.target.value))} />
           <div className="transport-meta"><span>{project.settings.aspect}</span><span>{videoClips.length} CLIPS</span></div>
         </div>
 
@@ -848,7 +1043,7 @@ function StudioWorkspace({ onOpenShowcase }: { onOpenShowcase: () => void }) {
               <div className="timeline-track">{videoClips.map((clip) => <button key={clip.id} className={`timeline-clip ${project.selection.clipId === clip.id ? 'selected' : ''}`} style={{ left: `${clip.start / timelineDuration * 100}%`, width: `${Math.max(2.5, (clip.sourceEnd - clip.sourceStart) / clip.speed / timelineDuration * 100)}%` }} onClick={(event) => { event.stopPropagation(); edit({ type: 'SELECT', selection: { clipId: clip.id, mediaId: clip.mediaId, trackId: primaryVideoTrack.id, captionId: null } }) }}><strong>{clip.name}</strong><span>{clip.speed.toFixed(2)}× · {formatDuration((clip.sourceEnd - clip.sourceStart) / clip.speed)}</span></button>)}</div>
               <div className="timeline-track">{project.captions.map((caption) => <button key={caption.id} className={`timeline-clip caption ${project.selection.captionId === caption.id ? 'selected' : ''}`} style={{ left: `${caption.start / timelineDuration * 100}%`, width: `${Math.max(2.5, (caption.end - caption.start) / timelineDuration * 100)}%` }} onClick={(event) => { event.stopPropagation(); edit({ type: 'SELECT', selection: { captionId: caption.id, clipId: null, trackId: null } }) }}><strong>{caption.text}</strong><span>{formatDuration(caption.end - caption.start)}</span></button>)}</div>
               <div className="timeline-track">{videoClips.filter((clip) => project.media.find((asset) => asset.id === clip.mediaId)?.hasAudio).map((clip) => <div key={clip.id} className="timeline-clip audio" style={{ left: `${clip.start / timelineDuration * 100}%`, width: `${Math.max(2.5, (clip.sourceEnd - clip.sourceStart) / clip.speed / timelineDuration * 100)}%` }}><strong>原声 · {Math.round(clip.volume * 100)}%</strong><span>WAVEFORM</span></div>)}</div>
-              <div className="timeline-playhead" style={{ left: `${project.playhead / timelineDuration * 100}%` }} />
+              <div className="timeline-playhead" style={{ left: `${playhead / timelineDuration * 100}%` }} />
             </div>
           </div>
         </div>
@@ -882,7 +1077,7 @@ function StudioWorkspace({ onOpenShowcase }: { onOpenShowcase: () => void }) {
       </aside>
     </main>
 
-    {versionsOpen && <div className="studio-modal-backdrop" onMouseDown={() => setVersionsOpen(false)}><div className="version-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>版本与回滚</h2><p style={{ margin: '6px 0 0', color: '#77858e', fontSize: 12 }}>Agent 和自进化运行前会自动创建快照。</p></div><button onClick={() => setVersionsOpen(false)}><X size={18} /></button></header>{project.versions.length ? [...project.versions].reverse().map((version, index) => <div className="version-card" key={version.id}><span>V{project.versions.length - index}</span><div><strong>{version.name}</strong><small>{new Date(version.createdAt).toLocaleString('zh-CN')} · {version.snapshot.tracks.flatMap((track) => track.clips).length} clips</small></div><button onClick={() => { edit({ type: 'RESTORE_VERSION', versionId: version.id, at: new Date().toISOString() }); setVersionsOpen(false); notify('success', '已恢复所选版本，可继续撤销。') }}><RotateCcw size={13} /> 恢复</button></div>) : <div className="asset-empty">暂无版本快照。点击下方按钮创建第一个版本。</div>}<button className="studio-button accent" style={{ width: '100%', marginTop: 14 }} onClick={createVersion}><Plus size={16} /> 创建当前版本快照</button></div></div>}
+    {versionsOpen && <div className="studio-modal-backdrop" onMouseDown={() => setVersionsOpen(false)}><div className="version-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>版本与回滚</h2><p style={{ margin: '6px 0 0', color: '#77858e', fontSize: 12 }}>Agent 和自进化运行前会自动创建快照。</p></div><button onClick={() => setVersionsOpen(false)}><X size={18} /></button></header>{project.versions.length ? [...project.versions].reverse().map((version, index) => <div className="version-card" key={version.id}><span>V{project.versions.length - index}</span><div><strong>{version.name}</strong><small>{new Date(version.createdAt).toLocaleString('zh-CN')} · {version.snapshot.tracks.flatMap((track) => track.clips).length} clips</small></div><button onClick={() => restoreVersion(version.id)}><RotateCcw size={13} /> 恢复</button></div>) : <div className="asset-empty">暂无版本快照。点击下方按钮创建第一个版本。</div>}<button className="studio-button accent" style={{ width: '100%', marginTop: 14 }} onClick={createVersion}><Plus size={16} /> 创建当前版本快照</button></div></div>}
     {toast && <div className={`studio-toast ${toast.kind}`}>{toast.kind === 'success' ? <CheckCircle2 size={19} /> : <AlertCircle size={19} />}<span>{toast.message}</span></div>}
   </div>
 }

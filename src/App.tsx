@@ -386,6 +386,10 @@ function ShowcaseApp({ onBack }: { onBack: () => void }) {
   const cutDanceRef = useRef<HTMLVideoElement>(null)
   const presentationDanceRef = useRef<HTMLVideoElement>(null)
   const runToken = useRef(0)
+  const danceProgressRef = useRef(progress)
+  const danceMasterRef = useRef<HTMLVideoElement | null>(null)
+  const danceActiveKeyRef = useRef('')
+  const lastDanceUiCommitRef = useRef(0)
 
   const demo = DEMOS[activeDemo]
   const sourceType: DemoId | 'upload' = uploaded ? 'upload' : activeDemo
@@ -408,28 +412,99 @@ function ShowcaseApp({ onBack }: { onBack: () => void }) {
   useEffect(() => {
     if (!isDance) return
     const videos = [rawDanceRef.current, cutDanceRef.current, presentationDanceRef.current].filter((video): video is HTMLVideoElement => Boolean(video))
+    const master = showPresentation
+      ? presentationDanceRef.current
+      : compareMode === 'before'
+      ? rawDanceRef.current
+      : cutDanceRef.current ?? rawDanceRef.current
+    const activeVideos = showPresentation
+      ? [presentationDanceRef.current]
+      : compareMode === 'split'
+      ? [rawDanceRef.current, cutDanceRef.current]
+      : [master]
+    const activeSet = new Set(activeVideos.filter((video): video is HTMLVideoElement => Boolean(video)))
+    const activeKey = showPresentation ? 'presentation' : compareMode
+    const activeChanged = activeKey !== danceActiveKeyRef.current
+
+    if (master && master !== danceMasterRef.current) {
+      if (Number.isFinite(master.duration) && master.duration > 0) {
+        const handoffTime = Math.min(danceProgressRef.current * duration, Math.max(0, master.duration - .01))
+        // Changing compare modes is an explicit clock hand-off, so align the new
+        // master once instead of letting the public timecode jump to its stale time.
+        if (Math.abs(master.currentTime - handoffTime) > .025) master.currentTime = handoffTime
+      }
+      // Record the hand-off even before metadata arrives. readyDanceVideo will
+      // position the new master once its duration is known.
+      danceMasterRef.current = master
+    }
+    if (master) master.playbackRate = 1
+
+    if (activeChanged && master && Number.isFinite(master.duration) && master.duration > 0) {
+      activeSet.forEach((video) => {
+        if (video === master || !Number.isFinite(video.duration) || video.duration <= 0) return
+        const targetTime = Math.min(master.currentTime, Math.max(0, video.duration - .01))
+        if (Math.abs(video.currentTime - targetTime) > .025) video.currentTime = targetTime
+      })
+    }
+    danceActiveKeyRef.current = activeKey
+
     videos.forEach((video) => {
       const isPresentationVideo = video === presentationDanceRef.current
       const isAudibleVideo = showPresentation ? isPresentationVideo : video === (compareMode === 'before' ? rawDanceRef.current : cutDanceRef.current)
       video.muted = !soundEnabled || !isAudibleVideo
-      if (playing && (!showPresentation || isPresentationVideo)) void video.play().catch(() => undefined)
-      else video.pause()
+      if (playing && activeSet.has(video)) void video.play().catch(() => undefined)
+      else {
+        video.pause()
+        video.playbackRate = 1
+      }
     })
-  }, [compareMode, isDance, playing, showPresentation, soundEnabled])
+
+    if (!playing && !isRunning && master && Number.isFinite(master.currentTime)) {
+      const normalized = clamp(master.currentTime / duration)
+      danceProgressRef.current = normalized
+      setProgress(normalized)
+    }
+  }, [compareMode, duration, isDance, isRunning, playing, showPresentation, soundEnabled])
 
   useEffect(() => {
     if (!isDance || !playing) return
     let frame = 0
-    const update = () => {
+    const update = (timestamp: number) => {
       const master = showPresentation
         ? presentationDanceRef.current
         : compareMode === 'before'
         ? rawDanceRef.current
         : cutDanceRef.current ?? rawDanceRef.current
       if (master && Number.isFinite(master.duration) && master.duration > 0) {
-        setProgress(clamp(master.currentTime / duration))
-        ;[rawDanceRef.current, cutDanceRef.current, presentationDanceRef.current].forEach((follower) => {
-          if (follower && follower !== master && Math.abs(follower.currentTime - master.currentTime) > .09) follower.currentTime = master.currentTime
+        const previousTime = danceProgressRef.current * duration
+        const normalized = clamp(master.currentTime / duration)
+        const looped = master.currentTime + .5 < previousTime
+        danceProgressRef.current = normalized
+
+        if (looped || timestamp - lastDanceUiCommitRef.current >= 100) {
+          lastDanceUiCommitRef.current = timestamp
+          setProgress(normalized)
+        }
+
+        const followers = showPresentation || compareMode !== 'split'
+          ? []
+          : [rawDanceRef.current, cutDanceRef.current]
+        followers.forEach((follower) => {
+          if (!follower || follower === master || !Number.isFinite(follower.duration) || follower.duration <= 0) return
+          const targetTime = Math.min(master.currentTime, Math.max(0, follower.duration - .01))
+          const drift = targetTime - follower.currentTime
+          // Native loop is the only automatic hard sync. During ordinary
+          // playback, gently trim speed so decoder stalls cannot cause a seek.
+          if (looped && Math.abs(drift) > .04) {
+            follower.currentTime = targetTime
+            follower.playbackRate = 1
+          } else if (Math.abs(drift) > .04) {
+            const maxCorrection = Math.abs(drift) > .2 ? .1 : .04
+            const correction = Math.max(1 - maxCorrection, Math.min(1 + maxCorrection, 1 + drift * .4))
+            if (Math.abs(follower.playbackRate - correction) > .002) follower.playbackRate = correction
+          } else if (follower.playbackRate !== 1) {
+            follower.playbackRate = 1
+          }
         })
       }
       frame = window.requestAnimationFrame(update)
@@ -442,22 +517,37 @@ function ShowcaseApp({ onBack }: { onBack: () => void }) {
 
   const seekTo = (nextProgress: number, pause = false) => {
     const normalized = clamp(nextProgress)
+    danceProgressRef.current = normalized
     setProgress(normalized)
     if (isDance) {
       const time = normalized * duration
       ;[rawDanceRef.current, cutDanceRef.current, presentationDanceRef.current].forEach((video) => {
-        if (video && Number.isFinite(video.duration)) video.currentTime = Math.min(time, Math.max(0, video.duration - .01))
+        if (video && Number.isFinite(video.duration)) {
+          video.currentTime = Math.min(time, Math.max(0, video.duration - .01))
+          video.playbackRate = 1
+        }
       })
     }
     if (pause) setPlaying(false)
   }
 
   const readyDanceVideo = (video: HTMLVideoElement) => {
-    video.currentTime = Math.min(progress * duration, Math.max(0, video.duration - .01))
+    video.currentTime = Math.min(danceProgressRef.current * duration, Math.max(0, video.duration - .01))
+    video.playbackRate = 1
     const isPresentationVideo = video === presentationDanceRef.current
+    const isRawVideo = video === rawDanceRef.current
+    const isCutVideo = video === cutDanceRef.current
     const isAudibleVideo = showPresentation ? isPresentationVideo : video === (compareMode === 'before' ? rawDanceRef.current : cutDanceRef.current)
+    const isActiveVideo = showPresentation
+      ? isPresentationVideo
+      : compareMode === 'split'
+      ? isRawVideo || isCutVideo
+      : compareMode === 'before'
+      ? isRawVideo
+      : isCutVideo
     video.muted = !soundEnabled || !isAudibleVideo
-    if (playing && (!showPresentation || isPresentationVideo)) void video.play().catch(() => undefined)
+    if (playing && isActiveVideo) void video.play().catch(() => undefined)
+    else video.pause()
   }
 
   const generatedCode = useMemo(() => {
@@ -485,6 +575,9 @@ function ShowcaseApp({ onBack }: { onBack: () => void }) {
     setPlan(buildLocalPlan(DEMOS[id].prompt, id))
     setStage('idle')
     setActiveStep(-1)
+    danceProgressRef.current = .02
+    danceMasterRef.current = null
+    danceActiveKeyRef.current = ''
     setProgress(.02)
     setPlaying(true)
     setCompareMode(id === 'dance' ? 'split' : 'after')
@@ -535,7 +628,7 @@ function ShowcaseApp({ onBack }: { onBack: () => void }) {
     await new Promise((resolve) => window.setTimeout(resolve, 520))
     if (runToken.current !== token) return
     setStage('ready')
-    setProgress(0)
+    seekTo(0)
     setPlaying(true)
     setCompareMode('after')
   }
@@ -613,8 +706,8 @@ function ShowcaseApp({ onBack }: { onBack: () => void }) {
         <div className="hero-stage">
           <div className="view-switcher"><button className={compareMode === 'before' ? 'active' : ''} onClick={() => setCompareMode('before')}>{isDance ? '未剪原片' : '基础版'}</button><button className={compareMode === 'split' ? 'active' : ''} onClick={() => setCompareMode('split')}><SplitSquareHorizontal size={15} /> {isDance ? '擦除对比' : '前后对比'}</button><button className={compareMode === 'after' ? 'active' : ''} onClick={() => setCompareMode('after')}>{isDance ? 'Agent 成片' : '代码成片'}</button></div>
           <div className={`hero-frame mode-${compareMode}`}>
-            {(compareMode === 'before' || compareMode === 'split') && <div className="compare-pane"><span className="pane-label">{isDance ? 'BEFORE / RAW TAKE' : 'BEFORE / BASIC'}</span>{renderScene('before')}</div>}
-            {(compareMode === 'after' || compareMode === 'split') && <div className="compare-pane" style={compareMode === 'split' ? { clipPath: `inset(0 0 0 ${splitPosition}%)` } : undefined}><span className="pane-label code">{isDance ? 'AFTER / AGENT CUT' : 'AFTER / CODE FILM'}</span>{renderScene('after')}</div>}
+            {(isDance || compareMode === 'before' || compareMode === 'split') && <div className="compare-pane" style={isDance && compareMode === 'after' ? { display: 'none' } : undefined}><span className="pane-label">{isDance ? 'BEFORE / RAW TAKE' : 'BEFORE / BASIC'}</span>{renderScene('before')}</div>}
+            {(isDance || compareMode === 'after' || compareMode === 'split') && <div className="compare-pane" style={isDance && compareMode === 'before' ? { display: 'none' } : compareMode === 'split' ? { clipPath: `inset(0 0 0 ${splitPosition}%)` } : undefined}><span className="pane-label code">{isDance ? 'AFTER / AGENT CUT' : 'AFTER / CODE FILM'}</span>{renderScene('after')}</div>}
             {compareMode === 'split' && <>
               <div className="split-line" style={{ left: `${splitPosition}%` }}><span><SplitSquareHorizontal size={15} /></span></div>
               <input className="split-range" type="range" min="5" max="95" step="1" value={splitPosition} onChange={(event) => setSplitPosition(Number(event.target.value))} aria-label="拖动前后对比擦除线" />
