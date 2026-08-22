@@ -1,13 +1,13 @@
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { ChangeEvent, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowUp, BrainCircuit, Check, ChevronDown, CirclePlay, Code2, Download,
-  Expand, FileCode2, Film, Github, Layers3, Pause, Play, RefreshCw,
+  Expand, ExternalLink, FileCode2, Film, Github, Layers3, Pause, Play, RefreshCw,
   Scissors, ShieldCheck, Sparkles, SplitSquareHorizontal, Upload, Video,
-  WandSparkles, X, Zap,
+  Volume2, VolumeX, WandSparkles, X, Zap,
 } from 'lucide-react'
 import StudioWorkspace from './StudioWorkspace'
 
-type DemoId = 'math' | 'product'
+type DemoId = 'math' | 'product' | 'dance'
 type CompareMode = 'before' | 'split' | 'after'
 type PipelineStage = 'idle' | 'planning' | 'building' | 'checking' | 'ready'
 type PlanStep = { id: string; title: string; detail: string; tool: string; duration: string }
@@ -55,6 +55,32 @@ const PRODUCT_FILM_SPEC = {
   colors: { accent: '#ff755f', background: '#07080a' },
 } as const
 
+const BASE_URL = (import.meta as ImportMeta & { env: { BASE_URL: string } }).env.BASE_URL
+
+const DANCE_MEDIA = {
+  raw: `${BASE_URL}demo/neon-sync/raw-take.mp4`,
+  cut: `${BASE_URL}demo/neon-sync/agent-cut.mp4`,
+  rawPoster: `${BASE_URL}demo/neon-sync/raw-poster.webp`,
+  cutPoster: `${BASE_URL}demo/neon-sync/cut-poster.webp`,
+} as const
+
+const DANCE_FILM_SPEC = {
+  fps: 24,
+  durationInFrames: 336,
+  comparison: 'same-shoot licensed source footage',
+  sources: [
+    { role: 'continuous-wide-take', pexelsId: 13648588 },
+    { role: 'licensed-close-up-insert', pexelsId: 13648585 },
+  ],
+  chapters: [
+    { frames: [0, 77], edit: 'establish-wide' },
+    { frames: [77, 168], edit: 'beat-cuts' },
+    { frames: [168, 252], edit: 'close-up-inserts' },
+    { frames: [252, 336], edit: 'finale-and-lockup' },
+  ],
+  disclosure: 'Girl-group-style stage demo; no performer or group endorsement.',
+} as const
+
 const sceneSpecCode = (name: string, spec: object) => `export const ${name} = ${JSON.stringify(spec, null, 2)} as const;`
 
 const DEMOS = {
@@ -88,6 +114,22 @@ const DEMOS = {
       { time: 3, label: '02 Product', detail: '界面进入画面' },
       { time: 7, label: '03 Feature', detail: '三个核心能力' },
       { time: 10, label: '04 Brand', detail: '品牌与行动按钮' },
+    ],
+  },
+  dance: {
+    id: 'dance' as const,
+    title: 'NEON SYNC — 女团风舞台前后对比',
+    shortTitle: '真实舞台 · NEON SYNC',
+    label: 'REAL STAGE / LICENSED SOURCE',
+    description: '同场授权素材：连续宽景原片，对比 Agent 重组后的宽景、近景与节奏成片。',
+    prompt: '把同场舞台素材剪成 14 秒女团风演示：保留表演主体，用宽近景切换强化节拍，并统一霓虹舞台质感。',
+    duration: DANCE_FILM_SPEC.durationInFrames / DANCE_FILM_SPEC.fps,
+    accent: '#ff4fc8',
+    chapters: [
+      { time: 0, label: '01 原始建立', detail: '连续宽景交代舞台' },
+      { time: 3.2, label: '02 节拍进入', detail: '按动作切换镜头' },
+      { time: 7, label: '03 近景强化', detail: '同场近景插切' },
+      { time: 10.5, label: '04 高潮收束', detail: '宽景回落与结尾' },
     ],
   },
 }
@@ -128,14 +170,15 @@ const formatBytes = (bytes: number) => bytes < 1024 * 1024
 
 const buildLocalPlan = (brief: string, source: DemoId | 'upload'): AgentPlan => {
   const isMath = source === 'math' || /数学|公式|导数|几何|math|equation/i.test(brief)
+  const isDance = source === 'dance' || /舞台|女团|卡点|dance|stage/i.test(brief)
   return {
     ...initialPlan,
-    projectTitle: source === 'upload' ? '上传视频 · 代码增强' : isMath ? DEMOS.math.shortTitle : DEMOS.product.shortTitle,
+    projectTitle: source === 'upload' ? '上传视频 · 代码增强' : isMath ? DEMOS.math.shortTitle : isDance ? DEMOS.dance.shortTitle : DEMOS.product.shortTitle,
     summary: brief.slice(0, 120),
-    accent: isMath ? DEMOS.math.accent : DEMOS.product.accent,
-    equation: isMath ? "f'(x) = lim Δy / Δx" : 'story × rhythm',
-    category: source === 'upload' ? '上传视频' : isMath ? '数学动画' : '品牌短片',
-    renderEngine: isMath ? 'React SVG + frame()' : 'Video + SVG Overlay',
+    accent: isMath ? DEMOS.math.accent : isDance ? DEMOS.dance.accent : DEMOS.product.accent,
+    equation: isMath ? "f'(x) = lim Δy / Δx" : isDance ? 'wide + close × beat' : 'story × rhythm',
+    category: source === 'upload' ? '上传视频' : isMath ? '数学动画' : isDance ? '真实舞台剪辑' : '品牌短片',
+    renderEngine: isMath ? 'React SVG + frame()' : isDance ? 'FFmpeg H.264 + AAC' : 'Video + SVG Overlay',
     steps: STEPS,
     demo: true,
   }
@@ -285,6 +328,42 @@ function UploadedScene({ media, variant, playing, ops }: { media: UploadedMedia;
   </div>
 }
 
+function DanceScene({
+  variant,
+  videoRef,
+  muted,
+  playing,
+  onReady,
+}: {
+  variant: 'before' | 'after'
+  videoRef: RefObject<HTMLVideoElement | null>
+  muted: boolean
+  playing: boolean
+  onReady: (video: HTMLVideoElement) => void
+}) {
+  const edited = variant === 'after'
+  return <div className={`dance-film ${variant}`}>
+    <video
+      ref={videoRef}
+      src={edited ? DANCE_MEDIA.cut : DANCE_MEDIA.raw}
+      poster={edited ? DANCE_MEDIA.cutPoster : DANCE_MEDIA.rawPoster}
+      muted={muted}
+      loop
+      playsInline
+      preload="auto"
+      autoPlay={playing}
+      onLoadedMetadata={(event) => onReady(event.currentTarget)}
+      aria-label={edited ? 'NEON SYNC Agent 剪辑成片' : 'NEON SYNC 未剪辑连续宽景原片'}
+    />
+    <div className="dance-video-vignette" />
+    <div className="dance-video-meta">
+      <span>{edited ? 'AGENT CUT' : 'RAW TAKE'}</span>
+      <strong>{edited ? 'WIDE + CLOSE / 4 CHAPTERS' : 'CONTINUOUS WIDE / NO EDIT'}</strong>
+    </div>
+    {edited && <div className="dance-cut-badge"><span /> SYNCED TO BEAT</div>}
+  </div>
+}
+
 function ShowcaseApp({ onBack }: { onBack: () => void }) {
   const [activeDemo, setActiveDemo] = useState<DemoId>('math')
   const [compareMode, setCompareMode] = useState<CompareMode>('after')
@@ -300,11 +379,17 @@ function ShowcaseApp({ onBack }: { onBack: () => void }) {
   const [showCode, setShowCode] = useState(false)
   const [showPresentation, setShowPresentation] = useState(false)
   const [showExport, setShowExport] = useState(false)
+  const [splitPosition, setSplitPosition] = useState(50)
+  const [soundEnabled, setSoundEnabled] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
+  const rawDanceRef = useRef<HTMLVideoElement>(null)
+  const cutDanceRef = useRef<HTMLVideoElement>(null)
+  const presentationDanceRef = useRef<HTMLVideoElement>(null)
   const runToken = useRef(0)
 
   const demo = DEMOS[activeDemo]
   const sourceType: DemoId | 'upload' = uploaded ? 'upload' : activeDemo
+  const isDance = !uploaded && activeDemo === 'dance'
   const duration = uploaded ? 24 : demo.duration
   const displayChapters = uploaded ? UPLOAD_CHAPTERS : demo.chapters
   const isRunning = ['planning', 'building', 'checking'].includes(stage)
@@ -315,12 +400,65 @@ function ShowcaseApp({ onBack }: { onBack: () => void }) {
   }, [])
 
   useEffect(() => {
-    if (!playing) return
+    if (!playing || isDance) return
     const timer = window.setInterval(() => setProgress((value) => value >= 1 ? 0 : value + 1 / (duration * 20)), 50)
     return () => window.clearInterval(timer)
-  }, [duration, playing])
+  }, [duration, isDance, playing])
+
+  useEffect(() => {
+    if (!isDance) return
+    const videos = [rawDanceRef.current, cutDanceRef.current, presentationDanceRef.current].filter((video): video is HTMLVideoElement => Boolean(video))
+    videos.forEach((video) => {
+      const isPresentationVideo = video === presentationDanceRef.current
+      const isAudibleVideo = showPresentation ? isPresentationVideo : video === (compareMode === 'before' ? rawDanceRef.current : cutDanceRef.current)
+      video.muted = !soundEnabled || !isAudibleVideo
+      if (playing && (!showPresentation || isPresentationVideo)) void video.play().catch(() => undefined)
+      else video.pause()
+    })
+  }, [compareMode, isDance, playing, showPresentation, soundEnabled])
+
+  useEffect(() => {
+    if (!isDance || !playing) return
+    let frame = 0
+    const update = () => {
+      const master = showPresentation
+        ? presentationDanceRef.current
+        : compareMode === 'before'
+        ? rawDanceRef.current
+        : cutDanceRef.current ?? rawDanceRef.current
+      if (master && Number.isFinite(master.duration) && master.duration > 0) {
+        setProgress(clamp(master.currentTime / duration))
+        ;[rawDanceRef.current, cutDanceRef.current, presentationDanceRef.current].forEach((follower) => {
+          if (follower && follower !== master && Math.abs(follower.currentTime - master.currentTime) > .09) follower.currentTime = master.currentTime
+        })
+      }
+      frame = window.requestAnimationFrame(update)
+    }
+    frame = window.requestAnimationFrame(update)
+    return () => window.cancelAnimationFrame(frame)
+  }, [compareMode, duration, isDance, playing, showPresentation])
 
   useEffect(() => () => { runToken.current += 1 }, [])
+
+  const seekTo = (nextProgress: number, pause = false) => {
+    const normalized = clamp(nextProgress)
+    setProgress(normalized)
+    if (isDance) {
+      const time = normalized * duration
+      ;[rawDanceRef.current, cutDanceRef.current, presentationDanceRef.current].forEach((video) => {
+        if (video && Number.isFinite(video.duration)) video.currentTime = Math.min(time, Math.max(0, video.duration - .01))
+      })
+    }
+    if (pause) setPlaying(false)
+  }
+
+  const readyDanceVideo = (video: HTMLVideoElement) => {
+    video.currentTime = Math.min(progress * duration, Math.max(0, video.duration - .01))
+    const isPresentationVideo = video === presentationDanceRef.current
+    const isAudibleVideo = showPresentation ? isPresentationVideo : video === (compareMode === 'before' ? rawDanceRef.current : cutDanceRef.current)
+    video.muted = !soundEnabled || !isAudibleVideo
+    if (playing && (!showPresentation || isPresentationVideo)) void video.play().catch(() => undefined)
+  }
 
   const generatedCode = useMemo(() => {
     if (uploaded) return sceneSpecCode('videoEdit', {
@@ -335,6 +473,7 @@ function ShowcaseApp({ onBack }: { onBack: () => void }) {
       ].filter(Boolean),
     })
     if (activeDemo === 'math') return sceneSpecCode('derivativeFilm', MATH_FILM_SPEC)
+    if (activeDemo === 'dance') return sceneSpecCode('neonSyncEdit', DANCE_FILM_SPEC)
     return sceneSpecCode('productFilm', PRODUCT_FILM_SPEC)
   }, [activeDemo, editOps, uploaded])
 
@@ -348,7 +487,9 @@ function ShowcaseApp({ onBack }: { onBack: () => void }) {
     setActiveStep(-1)
     setProgress(.02)
     setPlaying(true)
-    setCompareMode('after')
+    setCompareMode(id === 'dance' ? 'split' : 'after')
+    setSplitPosition(50)
+    setSoundEnabled(false)
   }
 
   const handleUpload = (event: ChangeEvent<HTMLInputElement>) => {
@@ -363,6 +504,7 @@ function ShowcaseApp({ onBack }: { onBack: () => void }) {
     setActiveStep(-1)
     setProgress(0)
     setCompareMode('after')
+    setSoundEnabled(false)
     event.target.value = ''
   }
 
@@ -399,7 +541,7 @@ function ShowcaseApp({ onBack }: { onBack: () => void }) {
   }
 
   const openPresentation = () => {
-    setProgress(0)
+    seekTo(0)
     setPlaying(true)
     setCompareMode('after')
     setShowPresentation(true)
@@ -415,11 +557,19 @@ function ShowcaseApp({ onBack }: { onBack: () => void }) {
     URL.revokeObjectURL(url)
   }
 
-  const renderScene = (variant: 'before' | 'after') => uploaded
+  const renderScene = (variant: 'before' | 'after', presentation = false) => uploaded
     ? <UploadedScene media={uploaded} variant={variant} playing={playing} ops={editOps} />
     : activeDemo === 'math'
       ? <MathScene variant={variant} progress={progress} />
-      : <ProductScene variant={variant} progress={progress} />
+      : activeDemo === 'product'
+        ? <ProductScene variant={variant} progress={progress} />
+        : <DanceScene
+            variant={variant}
+            videoRef={presentation ? presentationDanceRef : variant === 'before' ? rawDanceRef : cutDanceRef}
+            muted={!soundEnabled || (!presentation && compareMode === 'split' && variant === 'before')}
+            playing={playing}
+            onReady={readyDanceVideo}
+          />
 
   const statusText = {
     idle: ['CODE READY', '画面由代码逐帧生成'],
@@ -429,15 +579,20 @@ function ShowcaseApp({ onBack }: { onBack: () => void }) {
     ready: ['RENDER READY', '代码工程已通过检查'],
   }[stage]
 
+  const visibleStatus = isDance
+    ? ['REAL VIDEO / SYNCED', soundEnabled ? '真实 H.264 成片 · 声音已开启' : '真实 H.264 成片 · 默认静音']
+    : statusText
+
   return <div className="app-shell">
     <header className="topbar">
       <div className="brand"><div className="brand-mark"><Scissors size={20} /></div><div><strong>AXIOM CUT</strong><span>CODE-DIRECTED FILMS</span></div></div>
       <nav className="demo-switch" aria-label="选择演示项目">
         <button className={!uploaded && activeDemo === 'math' ? 'active' : ''} onClick={() => selectDemo('math')}><span>01</span><div><small>数学动画</small><strong>导数 · 局部线性</strong></div></button>
         <button className={!uploaded && activeDemo === 'product' ? 'active' : ''} onClick={() => selectDemo('product')}><span>02</span><div><small>品牌短片</small><strong>Flux Note</strong></div></button>
+        <button className={!uploaded && activeDemo === 'dance' ? 'active' : ''} onClick={() => selectDemo('dance')}><span>03</span><div><small>真实舞台</small><strong>NEON SYNC</strong></div></button>
       </nav>
       <div className="top-actions">
-        <div className="code-badge"><Code2 size={16} /><span>0 AI IMAGES</span></div>
+        <div className="code-badge"><Code2 size={16} /><span>{isDance ? 'LICENSED VIDEO' : '0 AI IMAGES'}</span></div>
         <button className="upload-button" onClick={onBack}><Film size={17} /> 返回剪辑台</button>
         <button className="upload-button" onClick={() => fileRef.current?.click()}><Upload size={17} /> 上传视频</button>
         <button className="present-button" onClick={openPresentation}><Expand size={17} /> 演示播放</button>
@@ -451,73 +606,109 @@ function ShowcaseApp({ onBack }: { onBack: () => void }) {
     <main className="workspace">
       <section className="showcase-column">
         <div className="showcase-head">
-          <div><span>{uploaded ? 'LOCAL VIDEO / CODE OVERLAY' : demo.label}</span><h1>{uploaded ? plan.projectTitle : demo.title}</h1><p>{uploaded ? `${uploaded.name} · ${uploaded.size} · 素材不离开浏览器` : `每一帧都由代码计算，而不是由模型猜测像素。 · ${demo.description}`}</p></div>
-          <div className="showcase-proof"><span><Layers3 size={14} /> {uploaded ? 'VIDEO + SVG' : 'REACT SVG'}</span><span><Zap size={14} /> 30 FPS</span><span><ShieldCheck size={14} /> DETERMINISTIC</span></div>
+          <div><span>{uploaded ? 'LOCAL VIDEO / CODE OVERLAY' : demo.label}</span><h1>{uploaded ? plan.projectTitle : demo.title}</h1><p>{uploaded ? `${uploaded.name} · ${uploaded.size} · 素材不离开浏览器` : isDance ? demo.description : `每一帧都由代码计算，而不是由模型猜测像素。 · ${demo.description}`}</p></div>
+          <div className="showcase-proof"><span><Layers3 size={14} /> {uploaded ? 'VIDEO + SVG' : isDance ? 'REAL H.264' : 'REACT SVG'}</span><span><Zap size={14} /> {isDance ? '14 SEC' : '30 FPS'}</span><span><ShieldCheck size={14} /> {isDance ? 'LICENSED' : 'DETERMINISTIC'}</span></div>
         </div>
 
         <div className="hero-stage">
-          <div className="view-switcher"><button className={compareMode === 'before' ? 'active' : ''} onClick={() => setCompareMode('before')}>基础版</button><button className={compareMode === 'split' ? 'active' : ''} onClick={() => setCompareMode('split')}><SplitSquareHorizontal size={15} /> 前后对比</button><button className={compareMode === 'after' ? 'active' : ''} onClick={() => setCompareMode('after')}>代码成片</button></div>
+          <div className="view-switcher"><button className={compareMode === 'before' ? 'active' : ''} onClick={() => setCompareMode('before')}>{isDance ? '未剪原片' : '基础版'}</button><button className={compareMode === 'split' ? 'active' : ''} onClick={() => setCompareMode('split')}><SplitSquareHorizontal size={15} /> {isDance ? '擦除对比' : '前后对比'}</button><button className={compareMode === 'after' ? 'active' : ''} onClick={() => setCompareMode('after')}>{isDance ? 'Agent 成片' : '代码成片'}</button></div>
           <div className={`hero-frame mode-${compareMode}`}>
-            {(compareMode === 'before' || compareMode === 'split') && <div className="compare-pane"><span className="pane-label">BEFORE / BASIC</span>{renderScene('before')}</div>}
-            {(compareMode === 'after' || compareMode === 'split') && <div className="compare-pane"><span className="pane-label code">AFTER / CODE FILM</span>{renderScene('after')}</div>}
-            {compareMode === 'split' && <div className="split-line"><span><SplitSquareHorizontal size={15} /></span></div>}
+            {(compareMode === 'before' || compareMode === 'split') && <div className="compare-pane"><span className="pane-label">{isDance ? 'BEFORE / RAW TAKE' : 'BEFORE / BASIC'}</span>{renderScene('before')}</div>}
+            {(compareMode === 'after' || compareMode === 'split') && <div className="compare-pane" style={compareMode === 'split' ? { clipPath: `inset(0 0 0 ${splitPosition}%)` } : undefined}><span className="pane-label code">{isDance ? 'AFTER / AGENT CUT' : 'AFTER / CODE FILM'}</span>{renderScene('after')}</div>}
+            {compareMode === 'split' && <>
+              <div className="split-line" style={{ left: `${splitPosition}%` }}><span><SplitSquareHorizontal size={15} /></span></div>
+              <input className="split-range" type="range" min="5" max="95" step="1" value={splitPosition} onChange={(event) => setSplitPosition(Number(event.target.value))} aria-label="拖动前后对比擦除线" />
+            </>}
           </div>
-          <div className={`floating-status ${stage}`}><span /><div><small>{statusText[0]}</small><strong>{statusText[1]}</strong></div><code>{String(Math.round(progress * duration)).padStart(2, '0')}s</code></div>
+          <div className={`floating-status ${stage} ${isDance ? 'dance-status' : ''}`}><span /><div><small>{visibleStatus[0]}</small><strong>{visibleStatus[1]}</strong></div><code>{String(Math.round(progress * duration)).padStart(2, '0')}s</code></div>
         </div>
 
-        <div className="transport">
-          <button className="transport-reset" onClick={() => setProgress(0)}><RefreshCw size={17} /></button>
+        <div className={`transport ${isDance ? 'dance-transport' : ''}`}>
+          <button className="transport-reset" onClick={() => seekTo(0)} aria-label="回到开头"><RefreshCw size={17} /></button>
           <button className="transport-play" onClick={() => setPlaying((value) => !value)}>{playing ? <Pause size={19} fill="currentColor" /> : <Play size={19} fill="currentColor" />}</button>
           <strong>00:{String(Math.round(progress * duration)).padStart(2, '0')}</strong><span>/ 00:{String(duration).padStart(2, '0')}</span>
-          <div className="transport-track"><i style={{ width: `${progress * 100}%` }} /><b style={{ left: `${progress * 100}%` }} /></div>
-          <button className="code-open" onClick={() => setShowCode(true)}><FileCode2 size={17} /> 查看场景代码</button>
+          <div className="transport-track"><i style={{ width: `${progress * 100}%` }} /><b style={{ left: `${progress * 100}%` }} /><input type="range" min="0" max="1000" step="1" value={Math.round(progress * 1000)} onChange={(event) => seekTo(Number(event.target.value) / 1000)} aria-label="成片播放位置" /></div>
+          {isDance && <button className={`sound-toggle ${soundEnabled ? 'enabled' : ''}`} onClick={() => setSoundEnabled((value) => !value)} aria-label={soundEnabled ? '关闭声音' : '开启声音'}>{soundEnabled ? <Volume2 size={17} /> : <VolumeX size={17} />} {soundEnabled ? '声音开启' : '默认静音'}</button>}
+          <button className="code-open" onClick={() => setShowCode(true)}><FileCode2 size={17} /> {isDance ? '查看剪辑清单' : '查看场景代码'}</button>
         </div>
 
         <div className="chapter-strip">
-          {displayChapters.map((chapter, index) => <button className={currentChapter === index ? 'active' : ''} key={chapter.label} onClick={() => { setProgress(chapter.time / duration); setPlaying(false) }}><span>{chapter.label}</span><strong>{chapter.detail}</strong><i /></button>)}
+          {displayChapters.map((chapter, index) => <button className={currentChapter === index ? 'active' : ''} key={chapter.label} onClick={() => seekTo(chapter.time / duration, true)}><span>{chapter.label}</span><strong>{chapter.detail}</strong><i /></button>)}
         </div>
       </section>
 
-      <aside className="director-panel">
-        <div className="director-head"><div className="director-icon"><BrainCircuit size={22} /></div><div><span>CODE DIRECTOR</span><h2>让模型写计划，让代码画画面</h2></div></div>
+      <aside className={`director-panel ${isDance ? 'dance-director' : ''}`}>
+        <div className="director-head"><div className="director-icon">{isDance ? <Film size={22} /> : <BrainCircuit size={22} />}</div><div><span>{isDance ? 'REAL EDIT AUDIT' : 'CODE DIRECTOR'}</span><h2>{isDance ? '同场素材，原片与成片同步对照' : '让模型写计划，让代码画画面'}</h2></div></div>
 
-        <div className="prompt-box">
-          <WandSparkles size={20} />
-          <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="描述你想要的叙事和运动…" />
-          <footer><span>{apiStatus.configured ? `DeepSeek · ${apiStatus.model}` : 'Local deterministic mode'}</span><button onClick={generate} disabled={isRunning || !prompt.trim()}>{isRunning ? <RefreshCw className="spin" size={18} /> : <ArrowUp size={19} />}</button></footer>
-        </div>
-
-        {uploaded && <div className="source-card"><Video size={20} /><div><span>本地视频</span><strong>{uploaded.name}</strong><small>{uploaded.size} · 浏览器临时预览</small></div><button onClick={() => selectDemo(activeDemo)}><X size={16} /></button></div>}
-
-        <div className="director-scroll">
-          <div className="section-heading"><span>代码操作</span><b>{Object.values(editOps).filter(Boolean).length}/4 开启</b></div>
-          <div className="operation-grid">
-            {([['captions', '字幕图层', 'text → timecode'], ['smartCrop', '安全构图', 'layout → 16:9'], ['color', '程序调色', 'params → grade'], ['motion', '运动图形', 'SVG → frames']] as [keyof EditOps, string, string][]).map(([key, title, detail]) => <button key={key} className={editOps[key] ? 'enabled' : ''} onClick={() => setEditOps((value) => ({ ...value, [key]: !value[key] }))}><span><Check size={13} /></span><div><strong>{title}</strong><small>{detail}</small></div></button>)}
+        {isDance ? <>
+          <div className="dance-audit-summary">
+            <div><span className="readonly-pill"><ShieldCheck size={13} /> READ ONLY</span><span className="real-video-pill"><span /> REAL VIDEO</span></div>
+            <strong>NEON SYNC · 14 秒 Agent Cut</strong>
+            <p>Before 保留连续宽景；After 用同场授权近景重新组织动作、节拍和视线。</p>
           </div>
 
-          <div className="section-heading"><span>生成过程</span><b>{Math.max(0, Math.min(activeStep + (stage === 'ready' ? 1 : 0), 6))}/6</b></div>
-          <div className="step-list">
-            {plan.steps.map((step, index) => {
-              const done = stage === 'ready' || activeStep > index
-              const active = isRunning && activeStep === index
-              return <div className={`step-item ${done ? 'done' : ''} ${active ? 'active' : ''}`} key={step.id}><div>{done ? <Check size={14} /> : String(index + 1).padStart(2, '0')}</div><p><strong>{step.title}</strong><span>{step.detail}</span></p><code>{step.tool}</code></div>
-            })}
+          <div className="director-scroll dance-audit-scroll">
+            <div className="section-heading"><span>剪辑效果</span><b>BEFORE → AFTER</b></div>
+            <div className="dance-metrics">
+              <div><span>14.0s</span><small>成片时长</small></div><div><span>07</span><small>镜头段落</small></div><div><span>02</span><small>授权机位</small></div>
+            </div>
+            <div className="dance-effect-list">
+              <div><i><Scissors size={16} /></i><p><strong>双机位重组</strong><span>连续宽景 → 宽景 / 近景交叉剪辑</span></p><b>EDIT 01</b></div>
+              <div><i><Zap size={16} /></i><p><strong>节拍与变速</strong><span>七段镜头按节奏重排，局部 0.9×–1.2×</span></p><b>EDIT 02</b></div>
+              <div><i><Layers3 size={16} /></i><p><strong>霓虹统一调色</strong><span>对比、饱和、色彩平衡、暗角与锐化</span></p><b>EDIT 03</b></div>
+              <div><i><WandSparkles size={16} /></i><p><strong>代码动效与节拍</strong><span>片头、章节标签、白闪、进度线与合成音轨</span></p><b>EDIT 04</b></div>
+              <div><i><ShieldCheck size={16} /></i><p><strong>可验证对照</strong><span>共享时间码；播放、定位与章节始终同步</span></p><b>SYNC</b></div>
+            </div>
+
+            <div className="section-heading"><span>授权来源</span><b>PEXELS</b></div>
+            <div className="license-card">
+              <div className="license-author"><div>KH</div><p><strong>Video by khanhhoangminh</strong><span>via Pexels · 同一场舞台素材</span></p></div>
+              <a href="https://www.pexels.com/video/women-dancing-in-studio-13648588/" target="_blank" rel="noreferrer"><span>连续宽景原片 · #13648588</span><ExternalLink size={14} /></a>
+              <a href="https://www.pexels.com/video/dancers-practising-dance-routine-13648585/" target="_blank" rel="noreferrer"><span>同场近景素材 · #13648585</span><ExternalLink size={14} /></a>
+              <a href="https://www.pexels.com/license/" target="_blank" rel="noreferrer"><span>查看 Pexels 授权条款</span><ExternalLink size={14} /></a>
+            </div>
+
+            <div className="dance-disclosure"><ShieldCheck size={18} /><p><strong>演示声明</strong><span>女团风舞台 Demo；使用同一组授权素材。画面中的演出者不构成真实组合或人物对 Axiom Cut 的背书，也不代表 Pexels 对本项目的代言。</span></p></div>
+          </div>
+        </> : <>
+          <div className="prompt-box">
+            <WandSparkles size={20} />
+            <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="描述你想要的叙事和运动…" />
+            <footer><span>{apiStatus.configured ? `DeepSeek · ${apiStatus.model}` : 'Local deterministic mode'}</span><button onClick={generate} disabled={isRunning || !prompt.trim()}>{isRunning ? <RefreshCw className="spin" size={18} /> : <ArrowUp size={19} />}</button></footer>
           </div>
 
-          <div className="render-contract"><div><ShieldCheck size={19} /><strong>可复现渲染契约</strong><span>PASS</span></div><p>模型只输出章节、参数和操作；SVG、视频图层与每一帧都由代码计算。</p><ul><li><Check size={13} /> 0 张 AI 生图</li><li><Check size={13} /> frame-based</li><li><Check size={13} /> 可查看源码</li><li><Check size={13} /> 同输入同画面</li></ul></div>
-        </div>
+          {uploaded && <div className="source-card"><Video size={20} /><div><span>本地视频</span><strong>{uploaded.name}</strong><small>{uploaded.size} · 浏览器临时预览</small></div><button onClick={() => selectDemo(activeDemo)}><X size={16} /></button></div>}
+
+          <div className="director-scroll">
+            <div className="section-heading"><span>代码操作</span><b>{Object.values(editOps).filter(Boolean).length}/4 开启</b></div>
+            <div className="operation-grid">
+              {([['captions', '字幕图层', 'text → timecode'], ['smartCrop', '安全构图', 'layout → 16:9'], ['color', '程序调色', 'params → grade'], ['motion', '运动图形', 'SVG → frames']] as [keyof EditOps, string, string][]).map(([key, title, detail]) => <button key={key} className={editOps[key] ? 'enabled' : ''} onClick={() => setEditOps((value) => ({ ...value, [key]: !value[key] }))}><span><Check size={13} /></span><div><strong>{title}</strong><small>{detail}</small></div></button>)}
+            </div>
+
+            <div className="section-heading"><span>生成过程</span><b>{Math.max(0, Math.min(activeStep + (stage === 'ready' ? 1 : 0), 6))}/6</b></div>
+            <div className="step-list">
+              {plan.steps.map((step, index) => {
+                const done = stage === 'ready' || activeStep > index
+                const active = isRunning && activeStep === index
+                return <div className={`step-item ${done ? 'done' : ''} ${active ? 'active' : ''}`} key={step.id}><div>{done ? <Check size={14} /> : String(index + 1).padStart(2, '0')}</div><p><strong>{step.title}</strong><span>{step.detail}</span></p><code>{step.tool}</code></div>
+              })}
+            </div>
+
+            <div className="render-contract"><div><ShieldCheck size={19} /><strong>可复现渲染契约</strong><span>PASS</span></div><p>模型只输出章节、参数和操作；SVG、视频图层与每一帧都由代码计算。</p><ul><li><Check size={13} /> 0 张 AI 生图</li><li><Check size={13} /> frame-based</li><li><Check size={13} /> 可查看源码</li><li><Check size={13} /> 同输入同画面</li></ul></div>
+          </div>
+        </>}
       </aside>
     </main>
 
-    {showCode && <div className="drawer-backdrop" onMouseDown={() => setShowCode(false)}><div className="code-drawer" onMouseDown={(event) => event.stopPropagation()}><header><div><FileCode2 size={20} /><span>SCENE SOURCE OF TRUTH</span><strong>{uploaded ? 'video-edit.scene.ts' : activeDemo === 'math' ? 'derivative-film.scene.ts' : 'product-film.scene.ts'}</strong></div><div><span><Check size={14} /> Type-safe</span><span><Check size={14} /> No generated pixels</span><button onClick={() => setShowCode(false)}><X size={19} /></button></div></header><div className="code-editor"><div>{generatedCode.split('\n').map((_, index) => <span key={index}>{index + 1}</span>)}</div><pre><code>{generatedCode}</code></pre></div></div></div>}
+    {showCode && <div className="drawer-backdrop" onMouseDown={() => setShowCode(false)}><div className="code-drawer" onMouseDown={(event) => event.stopPropagation()}><header><div><FileCode2 size={20} /><span>SCENE SOURCE OF TRUTH</span><strong>{uploaded ? 'video-edit.scene.ts' : activeDemo === 'math' ? 'derivative-film.scene.ts' : activeDemo === 'dance' ? 'neon-sync.edit.ts' : 'product-film.scene.ts'}</strong></div><div><span><Check size={14} /> Type-safe</span><span><Check size={14} /> {isDance ? 'Licensed sources' : 'No generated pixels'}</span><button onClick={() => setShowCode(false)}><X size={19} /></button></div></header><div className="code-editor"><div>{generatedCode.split('\n').map((_, index) => <span key={index}>{index + 1}</span>)}</div><pre><code>{generatedCode}</code></pre></div></div></div>}
 
     {showPresentation && <div className="presentation-mode">
-      <header><div className="brand"><div className="brand-mark"><Scissors size={20} /></div><div><strong>AXIOM CUT</strong><span>LIVE CODE FILM</span></div></div><div className="presentation-title"><span>{uploaded ? 'LOCAL VIDEO' : demo.label}</span><strong>{uploaded ? plan.projectTitle : demo.title}</strong></div><button onClick={() => setShowPresentation(false)}><X size={22} /> 退出演示</button></header>
-      <div className="presentation-canvas">{renderScene('after')}</div>
-      <footer><button onClick={() => setPlaying((value) => !value)}>{playing ? <Pause size={22} fill="currentColor" /> : <Play size={22} fill="currentColor" />}</button><strong>00:{String(Math.round(progress * duration)).padStart(2, '0')} / 00:{String(duration).padStart(2, '0')}</strong><div><i style={{ width: `${progress * 100}%` }} /></div><span><Code2 size={16} /> LIVE SVG · NO AI IMAGES</span></footer>
+      <header><div className="brand"><div className="brand-mark"><Scissors size={20} /></div><div><strong>AXIOM CUT</strong><span>{isDance ? 'REAL VIDEO EDIT' : 'LIVE CODE FILM'}</span></div></div><div className="presentation-title"><span>{uploaded ? 'LOCAL VIDEO' : demo.label}</span><strong>{uploaded ? plan.projectTitle : demo.title}</strong></div><button onClick={() => setShowPresentation(false)}><X size={22} /> 退出演示</button></header>
+      <div className="presentation-canvas">{renderScene('after', true)}</div>
+      <footer><button onClick={() => setPlaying((value) => !value)}>{playing ? <Pause size={22} fill="currentColor" /> : <Play size={22} fill="currentColor" />}</button><strong>00:{String(Math.round(progress * duration)).padStart(2, '0')} / 00:{String(duration).padStart(2, '0')}</strong><div><i style={{ width: `${progress * 100}%` }} /></div><span><Code2 size={16} /> {isDance ? 'REAL VIDEO · LICENSED SOURCE' : 'LIVE SVG · NO AI IMAGES'}</span></footer>
     </div>}
 
-    {showExport && <div className="modal-backdrop" onMouseDown={() => setShowExport(false)}><div className="export-modal" onMouseDown={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setShowExport(false)}><X size={20} /></button><div className="export-icon"><FileCode2 size={30} /></div><span>REPRODUCIBLE PROJECT</span><h2>导出代码动画工程</h2><p>包含场景代码、章节时间、操作参数和素材引用。上传的视频本体不会写入导出文件。</p><div className="export-grid"><div><span>SCHEMA</span><strong>v1.0</strong></div><div><span>SCENES</span><strong>04</strong></div><div><span>FPS</span><strong>30</strong></div></div><button className="download-project" onClick={downloadProject}><Download size={18} /> 下载工程 JSON</button><small>这是代码动画展示工程；返回剪辑工作台可渲染并下载真实 H.264 MP4。</small></div></div>}
+    {showExport && <div className="modal-backdrop" onMouseDown={() => setShowExport(false)}><div className="export-modal" onMouseDown={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setShowExport(false)}><X size={20} /></button><div className="export-icon"><FileCode2 size={30} /></div><span>REPRODUCIBLE PROJECT</span><h2>{isDance ? '导出真实剪辑审计工程' : '导出代码动画工程'}</h2><p>{isDance ? '包含章节时间、剪辑操作、授权来源和素材引用；真实视频文件不重复打包。' : '包含场景代码、章节时间、操作参数和素材引用。上传的视频本体不会写入导出文件。'}</p><div className="export-grid"><div><span>SCHEMA</span><strong>v1.0</strong></div><div><span>SCENES</span><strong>04</strong></div><div><span>{isDance ? 'LENGTH' : 'FPS'}</span><strong>{isDance ? '14s' : '30'}</strong></div></div><button className="download-project" onClick={downloadProject}><Download size={18} /> 下载工程 JSON</button><small>{isDance ? '成片是已渲染的真实 H.264 视频；工程 JSON 用于复现剪辑决策。' : '这是代码动画展示工程；返回剪辑工作台可渲染并下载真实 H.264 MP4。'}</small></div></div>}
   </div>
 }
 

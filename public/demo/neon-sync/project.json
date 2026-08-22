@@ -1,0 +1,32 @@
+{
+  "schema": "axiom-cut/demo-v1",
+  "id": "neon-sync",
+  "title": "NEON SYNC · Performance Cut",
+  "duration": 14,
+  "fps": 24,
+  "resolution": "1280x720",
+  "source": {
+    "creator": "khanhhoangminh",
+    "provider": "Pexels",
+    "license": "https://www.pexels.com/license/",
+    "wide": "https://www.pexels.com/video/women-dancing-in-studio-13648588/",
+    "close": "https://www.pexels.com/video/dancers-practising-dance-routine-13648585/",
+    "endorsement": false
+  },
+  "before": {
+    "mode": "continuous take",
+    "operations": ["equal-duration extract", "downscale", "mute", "comparison label"]
+  },
+  "after": {
+    "engine": "FFmpeg",
+    "operations": [
+      "deterministic seven-shot sequence",
+      "two-angle sequence",
+      "speed changes",
+      "punch-in crops",
+      "neon stage grade",
+      "code-rendered titles and progress graphics",
+      "synthesized beat audio"
+    ]
+  }
+}

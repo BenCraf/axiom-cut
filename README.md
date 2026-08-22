@@ -17,7 +17,7 @@ A complete, code-directed video editing Agent. Import real footage, describe the
 - Undo/redo, autosave, project JSON import/export, and version snapshots
 - Real queued FFmpeg rendering with progress, cancellation, and MP4 download
 - H.264 video, AAC audio, Chinese title/subtitle burn-in, and multi-clip concatenation
-- A separate presentation mode with two 100% React/SVG code films
+- A separate presentation mode with two 100% React/SVG code films and one licensed real-footage before/after film
 
 ## Run locally
 
@@ -84,12 +84,19 @@ The test creates two temporary videos, uploads and analyzes them, renders an int
 
 ## Demo mode
 
-Click **展示 Demo** to open the presentation-oriented code films:
+Click **展示 Demo** to open the presentation-oriented films:
 
 - **Derivative / local linearity** — an 18-second, four-chapter mathematical story with a code-drawn car, exact Bézier curve, secant, tangent, shrinking delta, and limit formula.
 - **Flux Note product launch** — a 12-second product film with staged typography, device UI, feature cards, and CTA motion.
+- **Neon Sync performance cut** — a synchronized 14-second before/after comparison built from real dance footage: a continuous wide take on the left and a seven-shot, dual-angle, color-graded, titled, beat-driven Agent edit on the right. Use the draggable split to compare both versions at the same output timecode.
 
-Both demos are built from React/SVG frame logic. No generated image is used.
+The first two demos are built from React/SVG frame logic. Neon Sync uses licensed Pexels footage and a fully reproducible FFmpeg build; no generated image is used. To rebuild the bundled comparison assets:
+
+```bash
+npm run demo:neon
+```
+
+The source takes are [Women Dancing in Studio](https://www.pexels.com/video/women-dancing-in-studio-13648588/) and [Dancers Practising Dance Routine](https://www.pexels.com/video/dancers-practising-dance-routine-13648585/) by khanhhoangminh. They are used under the [Pexels license](https://www.pexels.com/license/), which permits modification and use in this demo. Attribution is included even though it is not required. The depicted dancers do not endorse Axiom Cut. See [`public/demo/neon-sync/CREDITS.md`](public/demo/neon-sync/CREDITS.md) for the exact asset record.
 
 ## API overview
 
@@ -117,6 +124,8 @@ Both demos are built from React/SVG frame logic. No generated image is used.
 ## Open-source notes
 
 - License: MIT
+- Bundled Neon Sync footage remains subject to the Pexels license described in its credits file; the application source code remains MIT.
+- See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for the repository-level media notice.
 - No 3Blue1Brown artwork, logo, or source material is included. The mathematical demo uses an original code-native visual system.
 - Never commit `.env` or API keys.
 

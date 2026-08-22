@@ -23,6 +23,8 @@
 - [x] H.264/AAC downloadable MP4
 - [x] Automated real-render smoke test and FFprobe verification
 - [x] Two polished code-only presentation films
+- [x] Licensed real-footage performance demo with synchronized before/after comparison
+- [x] Reproducible FFmpeg demo-asset build with embedded attribution and non-endorsement metadata
 - [x] DeepSeek key kept server-side
 - [x] GitHub-ready MIT open-source repository
 
